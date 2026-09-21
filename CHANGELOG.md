@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   search, install (with dependency resolution), update, remove, list, and
   publish. Installs land in `<compiler-dir>\packages\` where `get` resolves
   them.
-- `clm login` uses GitHub OAuth with PKCE (`code_challenge`) over a
-  `127.0.0.1:11894` callback; tokens stay on the machine in `~\.clm\auth.json`.
+- `clm login` uses GitHub's device flow (no client_secret needed, like `gh
+  auth login`): it prints a one-time code you enter at github.com/login/device.
+  Tokens stay on the machine in `~\.clm\auth.json`.
 - Registry support for the default
   `https://cdn.jsdelivr.net/gh/ccpl-lang/ccpl-packages@main` endpoint,
   overridable with `CLM_REGISTRY` (`file://` works for testing).

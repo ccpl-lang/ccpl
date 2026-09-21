@@ -533,9 +533,9 @@ static void auth_clear(void) {
     if (f) { fputs("{}", f); fclose(f); }
 }
 
-/* POST an urlencoded form to GitHub's token endpoint, encoding each
- * key=value segment individually so `&` separators survive. */
-static char *oauth_post(const char *body) {
+/* POST an urlencoded form (each key=value segment encoded individually so
+ * `&` separators survive) and return the JSON/body response. */
+static char *post_json(const char *url, const char *body) {
     Buf q = {0};
     const char *p = body;
     for (;;) {
@@ -552,13 +552,18 @@ static char *oauth_post(const char *body) {
         p = amp + 1;
     }
     Buf cmd = {0};
-    buf_put(&cmd, "curl.exe -sS -X POST https://github.com/login/oauth/access_token"
-                  " -H \"Accept: application/json\" -d \"");
+    buf_put(&cmd, "curl.exe -sS -X POST ");
+    buf_put(&cmd, url);
+    buf_put(&cmd, " -H \"Accept: application/json\" -d \"");
     buf_put(&cmd, q.s);
     buf_put(&cmd, "\"");
     char *json = run_capture(cmd.s);
     free(cmd.s); free(q.s);
     return json;
+}
+
+static char *oauth_post(const char *body) {
+    return post_json("https://github.com/login/oauth/access_token", body);
 }
 
 static char *api_call(const char *token, const char *url) {
@@ -747,7 +752,7 @@ static void help(void) {
     printf(
         "clm %s - Cool Library Manager for CCPL\n\n"
         "usage:\n"
-        "  clm login                     link this machine to a GitHub account (browser OAuth)\n"
+        "  clm login                     link this machine to a GitHub account (device flow)\n"
         "  clm logout                    forget the linked account\n"
         "  clm whoami                    show the linked account\n"
         "  clm search <query>            search the package registry\n"
@@ -762,7 +767,95 @@ static void help(void) {
         CLM_VERSION, registry_base());
 }
 
-static int cmd_login(void) {
+/* device flow login (no client_secret required, like GitHub CLI `gh auth login`).
+ * Prints a one-time code the user enters at https://github.com/login/device. */
+static int login_device_flow(void) {
+    const char *cid = getenv("CLM_CLIENT_ID");
+    if (!cid || !*cid) cid = CLM_CLIENT_ID;
+
+    Buf body = {0};
+    buf_put(&body, "client_id="); buf_put(&body, cid);
+    char *json = post_json("https://github.com/login/device/code", body.s);
+    free(body.s);
+    if (!json) { fprintf(stderr, "could not reach GitHub to start the device flow.\n"); return 1; }
+    char *dev = json_str(json, "device_code");
+    char *uc = json_str(json, "user_code");
+    char *uri = json_str(json, "verification_uri");
+    char *ei = json_str(json, "expires_in");
+    char *iv = json_str(json, "interval");
+    free(json);
+    if (!dev || !uc) { fprintf(stderr, "GitHub did not return a device code.\n"); free(dev); free(uc); free(uri); free(ei); free(iv); return 1; }
+
+    long long expires = ei ? atoll(ei) : 900;
+    long long interval = iv ? atoll(iv) : 5;
+    if (interval < 5) interval = 5;
+
+    printf("First, copy your one-time code:\n\n");
+    printf("    %s\n\n", uc);
+    printf("Then press Enter to open GitHub (or visit %s yourself),\n", uri ? uri : "https://github.com/login/device");
+    printf("sign in, and paste the code where it asks. Waiting for you...\n");
+    fflush(stdout);
+    getchar();
+    if (!getenv("CLM_NO_BROWSER")) open_browser(uri ? uri : "https://github.com/login/device");
+    free(uri);
+
+    long long waited = 0;
+    for (;;) {
+        Sleep((DWORD)interval * 1000);
+        waited += interval;
+        if (waited > expires) {
+            fprintf(stderr, "device code expired. run `clm login` again.\n");
+            free(dev); free(uc); free(ei); free(iv);
+            return 1;
+        }
+        Buf tb = {0};
+        buf_put(&tb, "client_id="); buf_put(&tb, cid);
+        buf_put(&tb, "&device_code="); buf_put(&tb, dev);
+        buf_put(&tb, "&grant_type=urn:ietf:params:oauth:grant-type:device_code");
+        char *tj = oauth_post(tb.s);
+        free(tb.s);
+        if (!tj) continue;
+        char *at = json_str(tj, "access_token");
+        char *rt = json_str(tj, "refresh_token");
+        char *err = json_str(tj, "error");
+        long long e1 = 0, e2 = 0;
+        char *ce1 = json_str(tj, "expires_in"); if (ce1) { e1 = atoll(ce1); free(ce1); }
+        char *ce2 = json_str(tj, "refresh_token_expires_in"); if (ce2) { e2 = atoll(ce2); free(ce2); }
+        free(tj);
+        if (at) {
+            char *me = api_call(at, "https://api.github.com/user");
+            char *login = NULL;
+            if (me) { login = json_str(me, "login"); free(me); }
+            if (!login) login = xstrdup("you");
+            auth_save(cid, at, rt, login, e1, e2);
+            printf("Linked! Your account %s is now connected to clm.\n", login);
+            printf("You can now `clm publish <dir>` or leave it be.\n");
+            free(login); free(at); free(rt); free(dev); free(uc); free(ei); free(iv);
+            return 0;
+        }
+        if (err) {
+            if (strcmp(err, "authorization_pending") == 0) {
+                /* keep polling */
+            } else if (strcmp(err, "slow_down") == 0) {
+                interval += 5;
+            } else if (strcmp(err, "access_denied") == 0) {
+                fprintf(stderr, "you declined the authorization on GitHub.\n");
+                free(dev); free(uc); free(ei); free(iv);
+                return 1;
+            } else {
+                fprintf(stderr, "device flow failed: %s\n", err);
+                free(dev); free(uc); free(ei); free(iv);
+                return 1;
+            }
+            free(err);
+        }
+        free(at); free(rt);
+    }
+}
+
+/* one-click browser login (OAuth App web flow with PKCE). Used only when a
+ * CLM_CLIENT_SECRET is available, since GitHub needs it at the exchange. */
+static int login_web_flow(void) {
     char verifier[64], challenge[128];
     pkce_pair(verifier, sizeof verifier, challenge, sizeof challenge);
 
@@ -786,7 +879,7 @@ static int cmd_login(void) {
 
     printf("Opening your browser to authorize clm ...\n");
     printf("If nothing opens, visit:\n  %s\n\n", url.s);
-    open_browser(url.s);
+    if (!getenv("CLM_NO_BROWSER")) open_browser(url.s);
     free(url.s);
 
     LoginCtx ctx;
@@ -814,6 +907,12 @@ static int cmd_login(void) {
     }
     fprintf(stderr, "login failed: %s\n", ctx.err[0] ? ctx.err : "unknown error");
     return 1;
+}
+
+static int cmd_login(void) {
+    const char *secret = getenv("CLM_CLIENT_SECRET");
+    if (secret && *secret) return login_web_flow();
+    return login_device_flow();
 }
 
 static int cmd_whoami(void) {

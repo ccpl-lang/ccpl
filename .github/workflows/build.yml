@@ -39,6 +39,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           Copy-Item src\runtime.h dist\runtime.h
 
+      - name: Build clm.exe
+        shell: pwsh
+        run: |
+          & $env:TCC src\clm.c -o dist\clm.exe "$env:WINDIR\System32\ws2_32.dll" "$env:WINDIR\System32\shell32.dll"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
       - name: Smoke test
         shell: pwsh
         run: |
@@ -54,6 +60,7 @@ jobs:
           path: |
             dist/coolc.exe
             dist/runtime.h
+            dist/clm.exe
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
@@ -64,5 +71,6 @@ jobs:
           files: |
             dist/coolc.exe
             dist/runtime.h
+            dist/clm.exe
           generate_release_notes: true
           make_latest: true

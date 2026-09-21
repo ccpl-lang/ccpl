@@ -32,6 +32,7 @@ end
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Command line](#command-line)
+- [clm — the package manager](#clm--the-package-manager)
 - [Language tour](#language-tour)
   - [Comments](#comments)
   - [Values and variables](#values-and-variables)
@@ -96,6 +97,24 @@ coolc <source.ccpl> [-o out.exe] [--run] [--fast] [--show-c]
 | `--show-c` | Print the generated C and exit (great for debugging). |
 | `--version, -v` | Print the compiler version. |
 | `-h, --help` | Show usage. |
+
+## clm — the package manager
+
+`clm` ("Cool Library Manager") ships with the compiler and installs libraries for `get`. It is a pip-like tool backed by the [`ccpl-packages`](https://github.com/ccpl-lang/ccpl-packages) registry.
+
+```
+clm search <query>          search the registry
+clm install <name>[@<ver>]  install a package (and its dependencies)
+clm update [<name>]         update installed package(s)
+clm remove <name>           uninstall a package
+clm list                    list installed packages
+clm login                   link this machine to a GitHub account (for publishing)
+clm whoami                  show the linked account
+clm logout                  forget the linked account
+clm publish <dir>           build a library for publishing
+```
+
+Packages install into `<compiler-dir>\packages\`, exactly where `get` looks. The default registry is `https://cdn.jsdelivr.net/gh/ccpl-lang/ccpl-packages@main`; override it with the `CLM_REGISTRY` environment variable (`file://` works for testing).
 
 ## Language tour
 
@@ -309,10 +328,11 @@ The compiler emits C to a temporary file, runs `tcc` on it, and deletes it. Use 
 ccpl/
 â”œâ”€â”€ src/
 â”‚   â”œâ”€â”€ compiler.c      # the whole compiler: lexer, parser, codegen, CLI
+â”‚   â”œâ”€â”€ clm.c           # the clm package manager
 â”‚   â””â”€â”€ runtime.h       # runtime helpers injected into every program
 â”œâ”€â”€ examples/           # sample .ccpl programs
 â”œâ”€â”€ docs/               # language reference and guides
-â”œâ”€â”€ build.bat           # build script for the compiler
+â”œâ”€â”€ build.bat           # build script for the compiler and clm
 â””â”€â”€ LICENSE             # GNU GPL v3
 ```
 
@@ -322,6 +342,7 @@ ccpl/
 | --- | --- | --- |
 | **ccpl** | Compiler and language implementation (this repo) | GPL-3.0 |
 | **ccpl-toolchain** | Ready-to-run Windows toolchain bundle | GPL-3.0 |
+| **ccpl-packages** | The `clm` package registry | MIT |
 | **vscode-ccpl** | VS Code syntax highlighting | MIT |
 
 ## License

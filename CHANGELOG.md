@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `clm` ("Cool Library Manager"), a pip-like package manager for CCPL:
+  search, install (with dependency resolution), update, remove, list, and
+  publish. Installs land in `<compiler-dir>\packages\` where `get` resolves
+  them.
+- `clm login` uses GitHub OAuth with PKCE (`code_challenge`) over a
+  `127.0.0.1:11894` callback; tokens stay on the machine in `~\.clm\auth.json`.
+- Registry support for the default
+  `https://cdn.jsdelivr.net/gh/ccpl-lang/ccpl-packages@main` endpoint,
+  overridable with `CLM_REGISTRY` (`file://` works for testing).
+- `build.bat` and the release workflow now also build and ship `clm.exe`.
+
 ## [0.3.0] - 2026-09-21
 
 ### Added

@@ -953,6 +953,27 @@ static char *find_under(const char *root, const char *name) {
     return joined;
 }
 
+/* resolve `name` under one module root; returns malloc'd canonical path or NULL.
+   Tries root\name[.ccpl] (flat convention), then for a bare package name
+   root\name\name[.ccpl] and root\name\init[.ccpl] (installed-package convention). */
+static char *pkg_candidate(const char *root, const char *name) {
+    char *c = find_under(root, name);
+    if (c) { char *a = canon_abs(c); free(c); return a; }
+
+    if (strchr(name, '/') || strchr(name, '\\')) return NULL;
+
+    char p[MAX_PATH];
+    snprintf(p, sizeof p, "%s\\%s\\%s", root, name, name);
+    c = find_under("", p);
+    if (c) { char *a = canon_abs(c); free(c); return a; }
+
+    snprintf(p, sizeof p, "%s\\%s\\init", root, name);
+    c = find_under("", p);
+    if (c) { char *a = canon_abs(c); free(c); return a; }
+
+    return NULL;
+}
+
 /* resolve module name against importer dir, then installed package dirs */
 static char *resolve_module(const char *name, const char *importer_dir) {
     char *cand;
@@ -961,17 +982,18 @@ static char *resolve_module(const char *name, const char *importer_dir) {
         if (cand) { char *a = canon_abs(cand); free(cand); return a; }
         return NULL;
     }
-    cand = find_under(importer_dir, name);
-    if (cand) { char *a = canon_abs(cand); free(cand); return a; }
+
+    cand = pkg_candidate(importer_dir, name);
+    if (cand) return cand;
 
     char pkg[MAX_PATH];
     snprintf(pkg, sizeof pkg, "%s\\packages", exe_dir());
-    cand = find_under(pkg, name);
-    if (cand) { char *a = canon_abs(cand); free(cand); return a; }
+    cand = pkg_candidate(pkg, name);
+    if (cand) return cand;
 
     snprintf(pkg, sizeof pkg, "%s\\..\\packages", exe_dir());
-    cand = find_under(pkg, name);
-    if (cand) { char *a = canon_abs(cand); free(cand); return a; }
+    cand = pkg_candidate(pkg, name);
+    if (cand) return cand;
 
     return NULL;
 }

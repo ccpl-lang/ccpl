@@ -1,5 +1,5 @@
 @echo off
-rem Build the CCPL compiler with TinyCC.
+rem Build the CCPL compiler and clm package manager with TinyCC.
 rem
 rem Resolution order for the compiler driver:
 rem   1. %%TCC%% environment variable
@@ -23,5 +23,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem clm links Winsock2 and ShellExec; Windows ships both DLLs.
+"%TCCBIN%" "%ROOT%src\clm.c" -o "%ROOT%build\clm.exe" "%WINDIR%\System32\ws2_32.dll" "%WINDIR%\System32\shell32.dll"
+if errorlevel 1 (
+    echo.
+    echo clm build failed - see errors above.
+    exit /b 1
+)
+
 copy /Y "%ROOT%src\runtime.h" "%ROOT%build\runtime.h" >nul
-echo built %ROOT%build\coolc.exe
+echo built %ROOT%build\coolc.exe and %ROOT%build\clm.exe

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install TinyCC
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://download.savannah.gnu.org/releases/tinycc/tcc-0.9.27-win64-bin.zip" -OutFile tcc.zip
+          Expand-Archive tcc.zip -DestinationPath tcc
+          $exe = Get-ChildItem -Recurse -Filter tcc.exe tcc | Select-Object -First 1
+          if (-not $exe) { throw "tcc.exe not found in archive" }
+          "TCC=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build compiler
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build | Out-Null
+          & $env:TCC src\compiler.c -o build\coolc.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Copy-Item -Recurse (Split-Path $env:TCC) build\tcc
+          Copy-Item src\runtime.h build\runtime.h
+
+      - name: Run examples
+        shell: pwsh
+        run: |
+          $failed = 0
+          Get-ChildItem examples\*.ccpl | ForEach-Object {
+            Write-Host "== $($_.Name) =="
+            & build\coolc.exe $_.FullName --run
+            if ($LASTEXITCODE -ne 0) { $failed++ }
+          }
+          if ($failed -gt 0) { throw "$failed example(s) failed" }

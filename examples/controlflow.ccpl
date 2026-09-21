@@ -1,0 +1,22 @@
+-- control flow + strings demo
+var i = 0
+while i < 5 do
+    i = i + 1
+    if i % 2 == 0 then
+        say(i, "is even")
+    else
+        say(i, "is odd")
+    end
+end
+
+repeat
+    say("looping, i =", i)
+    i = i - 1
+until i <= 0
+
+var msg = "concat" .. " works " .. 42 .. " and booleans: " .. true
+say(msg)
+
+var num = tonumber("3.14")
+say("parsed:", num, num * 2)
+say("type of nil prints as:", nil)

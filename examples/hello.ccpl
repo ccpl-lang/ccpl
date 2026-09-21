@@ -1,0 +1,7 @@
+-- hello world in CCPL
+say("hello, world")
+
+variable lang = "CCPL"
+var year = 2026
+say("welcome to", lang, "- compiled straight to a native .exe")
+say("the time is year", year)

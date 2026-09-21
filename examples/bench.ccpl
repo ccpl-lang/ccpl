@@ -1,0 +1,22 @@
+-- perf test: native speed through TCC
+var total = 0
+for i = 1, 1000000 do
+    total = total + i
+end
+say("sum 1..1M", total)
+
+func is_prime(n)
+    if n < 2 then return false end
+    var i = 2
+    while i * i <= n do
+        if n % i == 0 then return false end
+        i = i + 1
+    end
+    return true
+end
+
+var count = 0
+for i = 1, 200000 do
+    if is_prime(i) then count = count + 1 end
+end
+say("primes up to 200000:", count)

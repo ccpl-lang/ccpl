@@ -1,0 +1,10 @@
+-- shared math helpers, imported with get
+func square(x)
+    return x * x
+end
+
+func cube(x)
+    return x * square(x)
+end
+
+var PI = 3.14159

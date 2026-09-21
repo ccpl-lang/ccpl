@@ -1,0 +1,40 @@
+-- features demo
+say("hex:", 0xFF, 0x10)
+say("float:", 3.14159, 1e3, 2.5e-2)
+say("floor mod:", 7 % 3, -7 % 3)
+say("unary:", -5, -(-3))
+say("and/or:", true and "yes", false or "fallback", nil or "nil-or")
+say("not:", not true, not nil)
+say("concat:", "num=" .. 42, "mix=" .. 3.14 .. "!")
+
+func classify(n)
+    if n < 0 then
+        return "negative"
+    elseif n == 0 then
+        return "zero"
+    else
+        return "positive"
+    end
+end
+
+for i = -1, 1 do
+    say(i, "is", classify(i))
+end
+
+var s = 0
+var k = 1
+repeat
+    s = s + k
+    k = k + 1
+until k > 10
+say("sum 1..10:", s)
+
+var c = 0
+while c < 3 do
+    c = c + 1
+    if c == 2 then
+        say("skipping to end at c =", c)
+        break
+    end
+    say("loop c =", c)
+end

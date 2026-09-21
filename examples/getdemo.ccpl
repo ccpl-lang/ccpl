@@ -1,0 +1,6 @@
+-- demonstrates get: pull in another ccpl file like python import
+get "mathlib"
+
+say("square 7 =", square(7))
+say("cube 3 =", cube(3))
+say("area r=2 =", PI * square(2))

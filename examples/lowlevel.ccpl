@@ -1,0 +1,34 @@
+-- native types, pointers, malloc, casts, continue
+var acc: i64 = 0
+for i = 1, 5 do
+    if i == 3 then
+        continue
+    end
+    acc = acc + i
+end
+say("sum skipping 3:", acc)
+
+var x: i32 = 42
+var p: i32* = &x
+*p = 99
+say("deref write:", *p, x)
+
+var q: i64 = (i64)x
+say("cast:", q)
+
+var a: f32 = 2.5
+var b: f64 = 3.5
+say("float math:", a * b)
+
+var buf: i8* = malloc(16)
+buf[0] = 104
+buf[1] = 105
+say("bytes:", buf[0], buf[1])
+free(buf)
+
+var n: i32 = 7
+var f: f64 = (f64)n / 2
+say("native div:", f)
+
+var u: u32 = 4294967295
+say("u32 max:", u)

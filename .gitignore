@@ -1,0 +1,17 @@
+# build output
+build/
+out/
+*.obj
+*.o
+*.lib
+*.exp
+
+# compiled programs
+*.exe
+
+# editor / OS cruft
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*~

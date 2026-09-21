@@ -583,6 +583,10 @@ typedef struct {
     const char *verifier;
     const char *expect_state;
     char out_login[256];
+    char out_token[2048];
+    char out_refresh[2048];
+    long long out_expires_in;
+    long long out_refresh_expires_in;
     char err[512];
     int code;
 } LoginCtx;
@@ -695,6 +699,10 @@ static int http_server_login(LoginCtx *ctx, int timeout_sec) {
                     if (me) { login = json_str(me, "login"); free(me); }
                     if (!login) login = xstrdup("you");
                     snprintf(ctx->out_login, sizeof ctx->out_login, "%s", login);
+                    snprintf(ctx->out_token, sizeof ctx->out_token, "%s", at);
+                    snprintf(ctx->out_refresh, sizeof ctx->out_refresh, "%s", rt ? rt : "");
+                    ctx->out_expires_in = e1;
+                    ctx->out_refresh_expires_in = e2;
                     ctx->code = 0;
                     char page[4096];
                     login_page(page, sizeof page, 0, login);
@@ -796,7 +804,10 @@ static int cmd_login(void) {
         return 1;
     }
     if (r != 0) { fprintf(stderr, "login cancelled or timed out.\n"); return 1; }
-    if (ctx.code == 0 && ctx.out_login[0]) {
+    if (ctx.code == 0 && ctx.out_login[0] && ctx.out_token[0]) {
+        auth_save(cid, ctx.out_token,
+                  ctx.out_refresh[0] ? ctx.out_refresh : NULL,
+                  ctx.out_login, ctx.out_expires_in, ctx.out_refresh_expires_in);
         printf("Linked! Your account %s is now connected to clm.\n", ctx.out_login);
         printf("You can close the browser tab and use `clm install <name>`.\n");
         return 0;

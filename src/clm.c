@@ -472,15 +472,17 @@ static void sha_final(Sha256 *s, unsigned char out[32]) {
 
 static const char b64t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
+/* RFC 4648 base64url without padding (a 32-byte digest becomes 43 chars). */
 static void base64url(const unsigned char *in, size_t n, Buf *out) {
     for (size_t i = 0; i < n; i += 3) {
         uint32_t v = (uint32_t)in[i] << 16;
-        if (i+1 < n) v |= (uint32_t)in[i+1] << 8;
-        if (i+2 < n) v |= in[i+2];
+        size_t left = n - i;
+        if (left > 1) v |= (uint32_t)in[i + 1] << 8;
+        if (left > 2) v |= in[i + 2];
         buf_putc(out, b64t[(v >> 18) & 63]);
         buf_putc(out, b64t[(v >> 12) & 63]);
-        buf_putc(out, (i+1 < n) ? b64t[(v >> 6) & 63] : '=');
-        buf_putc(out, (i+2 < n) ? b64t[v & 63] : '=');
+        if (left > 1) buf_putc(out, b64t[(v >> 6) & 63]);
+        if (left > 2) buf_putc(out, b64t[v & 63]);
     }
 }
 

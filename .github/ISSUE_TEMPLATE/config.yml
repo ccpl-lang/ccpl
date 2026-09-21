@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Question or discussion
-    url: https://github.com/itzdanti/ccpl/discussions
+    url: https://github.com/ccpl-lang/ccpl/discussions
     about: Ask questions and discuss CCPL here.

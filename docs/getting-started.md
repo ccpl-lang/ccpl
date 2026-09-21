@@ -8,7 +8,7 @@ The fastest path on Windows is the ready-to-run toolchain bundle, which ships th
 compiler, its runtime and TinyCC in one folder:
 
 ```bat
-git clone https://github.com/itzdanti/ccpl-toolchain.git
+git clone https://github.com/ccpl-lang/ccpl-toolchain.git
 cd ccpl-toolchain
 ```
 

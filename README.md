@@ -6,7 +6,7 @@
 [![Version](https://img.shields.io/badge/version-0.2.0-informational.svg)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6.svg)](#requirements)
 [![Made with C](https://img.shields.io/badge/made%20with-C-555.svg)](#building-from-source)
-[![CI](https://github.com/itzdanti/ccpl/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![CI](https://github.com/ccpl-lang/ccpl/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
 CCPL mixes a dynamic, Lua-like core with escape hatches to native C types, pointers and `malloc`, then lowers everything to C which [TinyCC](https://bellard.org/tcc/) turns into a native `.exe` in milliseconds.
 
@@ -59,13 +59,13 @@ end
 ## Requirements
 
 - Windows (the compiler currently uses `windows.h` for process spawning and path handling).
-- [TinyCC](https://bellard.org/tcc/) â€” either the bundled toolchain or a local install. The easiest route is the ready-to-run [`ccpl-toolchain`](https://github.com/itzdanti/ccpl-toolchain) bundle.
+- [TinyCC](https://bellard.org/tcc/) â€” either the bundled toolchain or a local install. The easiest route is the ready-to-run [`ccpl-toolchain`](https://github.com/ccpl-lang/ccpl-toolchain) bundle.
 
 ## Quick start
 
 ### Option A â€” ready-to-run toolchain
 
-Download or clone [`ccpl-toolchain`](https://github.com/itzdanti/ccpl-toolchain), then:
+Download or clone [`ccpl-toolchain`](https://github.com/ccpl-lang/ccpl-toolchain), then:
 
 ```bat
 coolc.bat hello.ccpl --run
@@ -74,7 +74,7 @@ coolc.bat hello.ccpl --run
 ### Option B â€” build the compiler yourself
 
 ```bat
-git clone https://github.com/itzdanti/ccpl.git
+git clone https://github.com/ccpl-lang/ccpl.git
 cd ccpl
 build.bat
 build\coolc.exe examples\hello.ccpl --run

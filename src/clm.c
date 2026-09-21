@@ -89,7 +89,7 @@ __declspec(dllimport) HINSTANCE __stdcall ShellExecuteA(void *hwnd, const char *
  * client_secret is NEVER shipped; PKCE ("code_challenge") makes the exchange
  * secure without it. Both may be overridden via the environment. */
 #ifndef CLM_CLIENT_ID
-#define CLM_CLIENT_ID "PASTE_YOUR_GITHUB_APP_CLIENT_ID"
+#define CLM_CLIENT_ID "Iv23liYDAsixbxCt9ZCg"
 #endif
 
 #define CLM_VERSION "0.1.0"

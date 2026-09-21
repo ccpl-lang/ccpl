@@ -3,7 +3,7 @@
 **Cool Compilable Programming Language** â€” a small, Lua-flavored language that compiles straight to a native executable. No interpreter, no bytecode, no VM.
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0-informational.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.0-informational.svg)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6.svg)](#requirements)
 [![Made with C](https://img.shields.io/badge/made%20with-C-555.svg)](#building-from-source)
 [![CI](https://github.com/ccpl-lang/ccpl/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)

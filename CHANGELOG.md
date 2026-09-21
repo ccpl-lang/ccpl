@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-21
+
+### Added
+
+- GitHub Actions build workflow that compiles `coolc.exe` and publishes a release
+  on every build.
+- `VERSION` file as the single source of truth for the compiler version.
+
 ## [0.2.0] - 2026-09-21
 
 ### Added

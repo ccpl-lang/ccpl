@@ -16,6 +16,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read version
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Install TinyCC
         shell: pwsh
         run: |
@@ -49,11 +55,14 @@ jobs:
             dist/coolc.exe
             dist/runtime.h
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', env.VERSION) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', env.VERSION) }}
           files: |
             dist/coolc.exe
             dist/runtime.h
           generate_release_notes: true
+          make_latest: true

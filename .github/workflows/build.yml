@@ -1,0 +1,59 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  compiler:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install TinyCC
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://download.savannah.gnu.org/releases/tinycc/tcc-0.9.27-win64-bin.zip" -OutFile tcc.zip
+          Expand-Archive tcc.zip -DestinationPath tcc
+          $exe = Get-ChildItem -Recurse -Filter tcc.exe tcc | Select-Object -First 1
+          if (-not $exe) { throw "tcc.exe not found in archive" }
+          "TCC=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build coolc.exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & $env:TCC src\compiler.c -o dist\coolc.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Copy-Item src\runtime.h dist\runtime.h
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse (Split-Path $env:TCC) dist\tcc
+          dist\coolc.exe examples\hello.ccpl --run
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Remove-Item -Recurse -Force dist\tcc
+
+      - name: Upload compiler artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coolc-${{ github.sha }}
+          path: |
+            dist/coolc.exe
+            dist/runtime.h
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/coolc.exe
+            dist/runtime.h
+          generate_release_notes: true

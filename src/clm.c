@@ -112,6 +112,7 @@ static void buf_req(Buf *b, size_t extra) {
     b->s = ns; b->cap = ncap;
 }
 static void buf_put(Buf *b, const char *s) { size_t n = strlen(s); buf_req(b, n); memcpy(b->s + b->len, s, n); b->len += n; b->s[b->len] = 0; }
+static void buf_putn(Buf *b, const char *s, size_t n) { buf_req(b, n); memcpy(b->s + b->len, s, n); b->len += n; b->s[b->len] = 0; }
 static void buf_putc(Buf *b, char c) { buf_req(b, 1); b->s[b->len++] = c; b->s[b->len] = 0; }
 
 static char *xstrdup(const char *s) {
@@ -533,8 +534,9 @@ static void auth_clear(void) {
     if (f) { fputs("{}", f); fclose(f); }
 }
 
-/* POST an urlencoded form (each key=value segment encoded individually so
- * `&` separators survive) and return the JSON/body response. */
+/* POST an urlencoded form. Each `name=value` pair keeps the `name=` and the
+ * `&` separators raw and percent-encodes only the value. GitHub rejects
+ * bodies where the `=` itself is encoded. Returns the response body. */
 static char *post_json(const char *url, const char *body) {
     Buf q = {0};
     const char *p = body;
@@ -544,9 +546,17 @@ static char *post_json(const char *url, const char *body) {
         char *seg = (char *)malloc(len + 1);
         if (!seg) { free(q.s); return NULL; }
         memcpy(seg, p, len); seg[len] = 0;
-        char *enc = url_encode(seg);
-        buf_put(&q, enc);
-        free(enc); free(seg);
+        const char *eq = strchr(seg, '=');
+        if (eq) {
+            size_t nlen = (size_t)(eq - seg) + 1; /* name including '=' */
+            buf_putn(&q, seg, nlen);
+            char *val = url_encode(eq + 1);
+            buf_put(&q, val);
+            free(val);
+        } else {
+            buf_put(&q, seg);
+        }
+        free(seg);
         if (!amp) break;
         buf_put(&q, "&");
         p = amp + 1;

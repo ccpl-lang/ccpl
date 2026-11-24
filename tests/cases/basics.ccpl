@@ -1,0 +1,19 @@
+var g = 10
+
+func bump()
+    return g + 1
+end
+
+say("global:", bump())
+
+if true then
+    var inner = 5
+    say("inner:", inner)
+end
+
+for i = 1, 3 do
+    var square = i * i
+    say("square:", square)
+end
+
+say("after blocks:", g)

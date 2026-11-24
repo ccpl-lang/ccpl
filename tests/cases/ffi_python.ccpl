@@ -1,0 +1,8 @@
+extern "python" func sqrt(x: f64): f64 from "math"
+extern "python" func gcd(a: i32, b: i32): i32 from "math"
+
+pyexec("import math")
+
+say("sqrt:", sqrt(9.0))
+say("gcd:", gcd(48, 18))
+say("factorial:", pyeval("math.factorial(6)"))

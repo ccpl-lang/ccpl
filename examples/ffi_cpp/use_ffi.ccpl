@@ -1,0 +1,19 @@
+-- C++ interoperability. Build ffitest.dll from ffitest.cpp first.
+-- A C++ declaration uses the same loader as C; give the decorated symbol with as.
+-- A non static member function receives its object pointer as the first argument.
+
+extern "c" func c_add(a: i32, b: i32): i32 from "ffitest.dll"
+extern "c" func c_greet(name: cstr): cstr from "ffitest.dll"
+extern "c++" func vec_len(x: f64, y: f64): f64 from "ffitest.dll" as "?vec_len@@YANNN@Z"
+extern "c++" func vec_scaled(self: ptr, k: f64): f64 from "ffitest.dll" as "?scaled@Vec2@@QEBANN@Z"
+
+var v: f64* = malloc(16)
+v[0] = 3.0
+v[1] = 4.0
+
+say("c_add:", c_add(20, 22))
+say("c_greet:", c_greet("ccpl"))
+say("c++ free function:", vec_len(3.0, 4.0))
+say("c++ member function:", vec_scaled(v, 2.0))
+
+free(v)

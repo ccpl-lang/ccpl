@@ -8,15 +8,15 @@ Closes #
 
 ## Type of change
 
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Documentation
-- [ ] Refactor / cleanup
-- [ ] Other:
+* [ ] Bug fix
+* [ ] New feature
+* [ ] Documentation
+* [ ] Refactor or cleanup
+* [ ] Other:
 
 ## Checklist
 
-- [ ] I built the compiler (`build.bat`) and it compiles without warnings.
-- [ ] I ran the examples and they still work.
-- [ ] I added or updated documentation where needed.
-- [ ] I updated `CHANGELOG.md` under *Unreleased*.
+* [ ] I built the compiler (`build.bat`) and it compiles without warnings.
+* [ ] I ran `tests\run.ps1` and it passes.
+* [ ] I updated documentation where needed.
+* [ ] I updated `CHANGELOG.md` for user visible changes.

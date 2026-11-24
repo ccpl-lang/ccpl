@@ -1,0 +1,16 @@
+var calls = 0
+
+func side()
+    calls = calls + 1
+    say("side called")
+    return false
+end
+
+var a = side() and true
+say("and result:", a, "calls:", calls)
+
+var b = side() or "fallback"
+say("or result:", b, "calls:", calls)
+
+var c = true and side()
+say("second and:", c, "calls:", calls)

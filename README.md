@@ -1,17 +1,16 @@
 # CCPL
 
-**Cool Compilable Programming Language** â€” a small, Lua-flavored language that compiles straight to a native executable. No interpreter, no bytecode, no VM.
+**Cool Compilable Programming Language** is a small, Lua flavored language that
+compiles straight to a native executable. There is no interpreter, no bytecode,
+and no virtual machine.
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.3.0-informational.svg)](CHANGELOG.md)
-[![Platform](https://img.shields.io/badge/platform-Windows-0078D6.svg)](#requirements)
-[![Made with C](https://img.shields.io/badge/made%20with-C-555.svg)](#building-from-source)
-[![CI](https://github.com/ccpl-lang/ccpl/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+Version 0.4.0.
 
-CCPL mixes a dynamic, Lua-like core with escape hatches to native C types, pointers and `malloc`, then lowers everything to C which [TinyCC](https://bellard.org/tcc/) turns into a native `.exe` in milliseconds.
+CCPL mixes a dynamic core with escape hatches to native C types, pointers, and
+`malloc`. Source is lowered to C, then TinyCC turns that C into a native program
+in milliseconds.
 
 ```ccpl
--- hello world in CCPL
 say("hello, world")
 
 func fib(n)
@@ -26,53 +25,63 @@ for i = 1, 10 do
 end
 ```
 
-## Table of contents
+> In one line: a small language that feels like Lua and ships a native program.
 
-- [Why CCPL](#why-ccpl)
-- [Requirements](#requirements)
-- [Quick start](#quick-start)
-- [Command line](#command-line)
-- [clm — the package manager](#clm--the-package-manager)
-- [Language tour](#language-tour)
-  - [Comments](#comments)
-  - [Values and variables](#values-and-variables)
-  - [Native types](#native-types)
-  - [Operators](#operators)
-  - [Control flow](#control-flow)
-  - [Functions](#functions)
-  - [Pointers and memory](#pointers-and-memory)
-  - [Builtins](#builtins)
-  - [Importing code with `get`](#importing-code-with-get)
-- [Examples](#examples)
-- [Building from source](#building-from-source)
-- [Project layout](#project-layout)
-- [Related repositories](#related-repositories)
-- [License](#license)
+## Contents
+
+* [Why CCPL](#why-ccpl)
+* [Requirements](#requirements)
+* [Quick start](#quick-start)
+* [Command line](#command-line)
+* [Language tour](#language-tour)
+* [Foreign function interface](#foreign-function-interface)
+* [Package manager](#package-manager)
+* [Examples](#examples)
+* [Building from source](#building-from-source)
+* [Testing](#testing)
+* [Project layout](#project-layout)
+* [Related repositories](#related-repositories)
+* [License](#license)
 
 ## Why CCPL
 
-- **Truly compiled.** Source lowers to C, TCC emits a native binary. There is no runtime interpreter.
-- **Tiny and fast to build.** A whole program compiles in a few milliseconds.
-- **Dynamic by default.** Numbers are doubles, plus strings, booleans and `nil`, with Lua-style `and`/`or`/`not` and `..` concatenation.
-- **Native when you need it.** `i8`â€¦`i64`, `u8`â€¦`u64`, `f32`/`f64`, `bool`, `char` and `ptr`, plus `&`/`*`, indexing and `malloc`/`free`.
-- **One self-contained C file.** The compiler is a single ~2k-line C source with no dependencies beyond the Windows API and TCC.
+* **Truly compiled.** Source becomes C, and TinyCC emits a native program. No
+  runtime interpreter is involved.
+* **Small and fast to build.** A whole program compiles in a few milliseconds.
+* **Dynamic by default.** Numbers are doubles, with strings, booleans, and
+  `nil`, plus Lua style `and`, `or`, and `not`.
+* **Native when needed.** `i8` to `i64`, `u8` to `u64`, `f32`, `f64`, `bool`,
+  `char`, `ptr`, and `cstr`, plus address of, dereference, indexing, and
+  `malloc` and `free`.
+* **Foreign functions.** Call C and C++ symbols from DLLs, and call Python
+  functions or evaluate Python code. See [docs/ffi.md](docs/ffi.md).
+* **One compiler file.** The compiler is a single C source with no dependencies
+  beyond the Windows API and TinyCC.
 
 ## Requirements
 
-- Windows (the compiler currently uses `windows.h` for process spawning and path handling).
-- [TinyCC](https://bellard.org/tcc/) â€” either the bundled toolchain or a local install. The easiest route is the ready-to-run [`ccpl-toolchain`](https://github.com/ccpl-lang/ccpl-toolchain) bundle.
+> CCPL targets Windows x64, and the toolchain bundle includes TinyCC.
+
+* Windows 10 or newer, on x64.
+* TinyCC, either the bundled toolchain or a local install. The easy route is
+  the ready to run [toolchain repository](https://github.com/ccpl-lang/ccpl-toolchain).
+* Python and a C++ compiler are optional, and only needed for the Python and
+  C++ foreign function features.
 
 ## Quick start
 
-### Option A â€” ready-to-run toolchain
+### Option A: ready to run toolchain
 
-Download or clone [`ccpl-toolchain`](https://github.com/ccpl-lang/ccpl-toolchain), then:
+Download or clone the
+[toolchain repository](https://github.com/ccpl-lang/ccpl-toolchain), then run:
 
 ```bat
 coolc.bat hello.ccpl --run
 ```
 
-### Option B â€” build the compiler yourself
+The bundle also contains `clm.exe`, the package manager, and `clm.bat`.
+
+### Option B: build the compiler yourself
 
 ```bat
 git clone https://github.com/ccpl-lang/ccpl.git
@@ -81,40 +90,23 @@ build.bat
 build\coolc.exe examples\hello.ccpl --run
 ```
 
-`build.bat` looks for the TinyCC driver in this order: `%TCC%`, `toolchain\tcc\tcc.exe`, then `tcc` on `PATH`.
+`build.bat` looks for the TinyCC driver in this order: `%TCC%`,
+`build\tcc\tcc.exe`, `..\ccpl-toolchain\tcc\tcc.exe`, then `tcc` on `PATH`.
 
 ## Command line
 
-```
+```text
 coolc <source.ccpl> [-o out.exe] [--run] [--fast] [--show-c]
 ```
 
-| Flag | Meaning |
-| --- | --- |
-| `-o, --output <file>` | Output executable path (default: source name with `.exe`). |
-| `--run` | Run the executable after a successful build. |
-| `--fast` | Compile the generated C with `-O2 -s`. |
-| `--show-c` | Print the generated C and exit (great for debugging). |
-| `--version, -v` | Print the compiler version. |
-| `-h, --help` | Show usage. |
-
-## clm — the package manager
-
-`clm` ("Cool Library Manager") ships with the compiler and installs libraries for `get`. It is a pip-like tool backed by the [`ccpl-packages`](https://github.com/ccpl-lang/ccpl-packages) registry.
-
-```
-clm search <query>          search the registry
-clm install <name>[@<ver>]  install a package (and its dependencies)
-clm update [<name>]         update installed package(s)
-clm remove <name>           uninstall a package
-clm list                    list installed packages
-clm login                   link this machine to a GitHub account (for publishing)
-clm whoami                  show the linked account
-clm logout                  forget the linked account
-clm publish <dir>           build a library for publishing
-```
-
-Packages install into `<compiler-dir>\packages\`, exactly where `get` looks. The default registry is `https://cdn.jsdelivr.net/gh/ccpl-lang/ccpl-packages@main`; override it with the `CLM_REGISTRY` environment variable (`file://` works for testing).
+* `-o, --output <file>` sets the output program path. The default is the source
+  name with `.exe`.
+* `--run` runs the program after a successful build.
+* `--fast` compiles the generated C with `-O2 -s`.
+* `--show-c` prints the generated C and exits. This is the best way to see how a
+  program is lowered.
+* `--version, -v` prints the compiler version.
+* `-h, --help` prints usage.
 
 ## Language tour
 
@@ -128,7 +120,7 @@ Packages install into `<compiler-dir>\packages\`, exactly where `get` looks. The
 
 ### Values and variables
 
-Dynamic values are numbers (doubles), strings, booleans and `nil`.
+Dynamic values are numbers, strings, booleans, and `nil`.
 
 ```ccpl
 var greeting = "hello"
@@ -137,19 +129,34 @@ var flag = true
 var nothing = nil
 
 count = count + 1
-say(greeting, count, flag, nothing)   --> hello   4   true   nil
+say(greeting, count, flag, nothing)
 ```
 
-Declare a variable without a value to get `nil`:
+A declaration without a value starts as `nil`:
 
 ```ccpl
 var x
 x = 10
 ```
 
+A declaration at the top level of a program is a global. Functions can read and
+write it. A declaration inside a block belongs to that block and is not visible
+after the block ends.
+
+```ccpl
+var calls = 0
+
+func bump()
+    calls = calls + 1
+    return calls
+end
+
+say(bump(), bump())
+```
+
 ### Native types
 
-Add a type after `:` to get a native C value. Native variables are unboxed and use C semantics.
+Add a colon and a type to get an unboxed native C value.
 
 ```ccpl
 var n: i32 = 42
@@ -157,37 +164,56 @@ var big: u64 = 9000000000
 var pi: f64 = 3.14159
 var ok: bool = true
 var p: i8* = malloc(16)
+var s: cstr = "hello"
 ```
 
-| Category | Types |
-| --- | --- |
-| Signed integers | `i8`, `i16`, `i32`, `i64` |
-| Unsigned integers | `u8`, `u16`, `u32`, `u64` |
-| Floating point | `f32`, `f64` |
-| Other | `bool`, `char`, `ptr` |
+The native types are `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`,
+`f32`, `f64`, `bool`, `char`, `ptr`, and `cstr`. Append `*` for a pointer, and
+repeat it for deeper pointers such as `u8**`. `ptr` is a generic `void *` and
+`cstr` is a C string (`char *`).
 
-Append `*` for pointers (`i32*`, `u8**`, â€¦). `ptr` is a generic `void *`.
+A type may be written before or after the name:
+
+```ccpl
+var x: i32 = 1
+var p: i32* = &x
+var i32* q = &x
+```
+
+A dynamic value is converted when it reaches a native target. Numeric targets
+use number conversion, and pointer and `cstr` targets use the string value:
+
+```ccpl
+var n: i32 = tonumber("42")
+var s: cstr = "hello"
+var q: i64 = (i64) 7
+```
 
 ### Operators
 
 From lowest to highest precedence:
 
-| Operators | Notes |
-| --- | --- |
-| `or` | Short-circuits, returns an operand |
-| `and` | Short-circuits, returns an operand |
-| `==` `~=` `<` `<=` `>` `>=` | Comparisons |
-| `..` | String concatenation (right associative) |
-| `+` `-` | Add, subtract |
-| `*` `/` `%` | Multiply, divide, modulo |
+* `or`
+* `and`
+* `==`, `~=`, `<`, `<=`, `>`, `>=`
+* `..` (right associative)
+* `+`, `-`
+* `*`, `/`, `%`
 
-- Dynamic numbers are doubles, so `/` always yields a fraction and `%` is floor-mod (`-7 % 3` is `2`).
-- Native integers keep C semantics for `/` (truncating) but `%` is also floor-mod.
-- `-` negates, `not` is logical negation, `#` is not used. Cast with `(type)expr`, dereference with `*`, address-of with `&`, index with `base[i]`.
+Dynamic numbers are doubles, so `/` always yields a fraction and `%` is floor
+modulo. Native integers use C rules for `/`, and `%` is floor modulo for both
+sides. `-` negates, `not` is logical negation, `&` takes an address, `*`
+dereferences, and `base[index]` indexes a pointer.
+
+`and` and `or` short circuit and return one of their operands. Each operand is
+evaluated once. `not` always returns a boolean.
 
 ### Control flow
 
 ```ccpl
+var x = 0
+var n = 3
+
 if x < 0 then
     say("negative")
 elseif x == 0 then
@@ -204,16 +230,17 @@ repeat
     n = n + 1
 until n >= 10
 
-for i = 0, 10 do          -- inclusive, optional step
+for i = 0, 10 do
     say(i)
 end
 
-for i = 10, 0, -1 do      -- count down
+for i = 10, 0, -1 do
     say(i)
 end
 ```
 
-`break` and `continue` work inside loops.
+`for` includes the limit, and the optional third value is the step. A step of
+zero is a runtime error. `break` and `continue` work inside loops.
 
 ### Functions
 
@@ -222,18 +249,19 @@ func add(a, b)
     return a + b
 end
 
--- native parameters and return type
 func mul(a: i32, b: i32): i32
     return a * b
 end
 
--- pointers work too
 func scale(p: f64*, k: f64): f64
     return *p * k
 end
 ```
 
-Functions are dynamically typed unless annotated. Native arguments are converted automatically when needed.
+Functions are dynamically typed unless annotated. Native arguments are
+converted automatically. Functions may be defined anywhere at the top level and
+may call themselves or any other function. A function with no `return` yields
+`nil`, or `0` for a native return type.
 
 ### Pointers and memory
 
@@ -241,7 +269,7 @@ Functions are dynamically typed unless annotated. Native arguments are converted
 var x: i32 = 42
 var p: i32* = &x
 *p = 99
-say("now x =", x)         --> now x = 99
+say("now x =", x)
 
 var buf: i8* = malloc(16)
 buf[0] = 104
@@ -250,106 +278,182 @@ say("bytes:", buf[0], buf[1])
 free(buf)
 ```
 
-`malloc`, `calloc`, `realloc` and `free` are built in. Because native values are unboxed, you can take their address and pass them anywhere a pointer is expected.
+`malloc`, `calloc`, `realloc`, and `free` are built in. Native values are
+unboxed, so their address can be passed anywhere a pointer is expected. Keep
+pointers in native variables. A pointer cannot be assigned to a dynamic
+variable, though passing one to `say` prints its numeric address.
 
 ### Builtins
 
-| Builtin | Description |
-| --- | --- |
-| `say(...)` | Print values separated by tabs, then a newline. |
-| `hey(...)` | Print values to stderr. |
-| `oh(msg)` | Print `msg` to stderr and abort. |
-| `tonumber(x)` | Convert to a number, or `nil` if it cannot. |
-| `tostring(x)` | Convert to a string. |
-| `malloc(n)` / `calloc(n, size)` / `realloc(p, n)` / `free(p)` | Native memory helpers. |
+* `say(...)` prints values separated by tabs, then a newline.
+* `hey(...)` prints values to standard error with a `hey:` prefix.
+* `oh(msg)` prints `fatal: msg` to standard error and exits.
+* `tonumber(x)` converts to a number, or returns `nil`.
+* `tostring(x)` converts to a string.
+* `malloc(n)`, `calloc(n, size)`, `realloc(p, n)`, and `free(p)` manage native
+  memory.
+* `pyexec(code)` runs Python statements.
+* `pyeval(code)` evaluates a Python expression and converts the result.
 
 ### Importing code with `get`
 
-`get` pulls another `.ccpl` file into the current program.
+`get` pulls another `.ccpl` file into the current program. It must appear at the
+top level of a file.
 
 ```ccpl
-get "mathlib"            -- imports the whole file
-
+-- get paths are relative to this file, so put this program at the repository root
+get "examples/mathlib"
 say(square(7))
+
+get "examples/mathlib/cube"
+say(cube(3))
 ```
 
-Resolution order:
+Resolution order is:
 
-1. relative to the importing file,
-2. `<compiler-dir>\packages\`,
-3. `<compiler-dir>\..\packages\`.
+1. Relative to the importing file.
+2. `<compiler dir>\packages\`.
+3. `<compiler dir>\..\packages\`.
 
-You can also import a single function:
+A whole module or any single function may be imported, in any order. Each
+definition is included at most once, and a module's top level statements run
+once.
+
+Top level declarations from imported modules become globals, so module
+functions can use module state.
+
+## Foreign function interface
+
+> A foreign declaration runs real native code. Load only libraries and modules
+> that you trust.
+
+CCPL can call C and C++ functions from DLLs and can call into Python. A
+declaration names the ABI, the signature, and the library or module.
 
 ```ccpl
-get "mathlib/square"
+extern "c" func strlen(s: cstr): u64 from "msvcrt.dll"
+extern "python" func sqrt(x: f64): f64 from "math"
+
+say(strlen("abcdef"))
+say(sqrt(2.0))
 ```
 
-Each module is loaded at most once, so diamond imports are safe.
+The full guide, including C++ symbol names and Python conversion rules, is in
+[docs/ffi.md](docs/ffi.md).
+
+## Package manager
+
+> Set `CLM_REGISTRY` to use a different registry. A `file://` URL is handy for
+> local testing.
+
+`clm` (Cool Library Manager) installs libraries for `get`. It is a pip like tool
+backed by the [package registry](https://github.com/ccpl-lang/ccpl-packages).
+
+```text
+clm search <query>
+clm install <name>[@<version>]
+clm update [<name>]
+clm remove <name>
+clm list
+clm login
+clm whoami
+clm logout
+clm publish <dir> [--submit <url>]
+```
+
+Packages install into `<compiler dir>\packages\`, exactly where `get` looks.
+The default registry is
+`https://cdn.jsdelivr.net/gh/ccpl-lang/ccpl-packages@main`. Set `CLM_REGISTRY`
+to override it; `file://` works for testing.
+
+`clm publish` builds a zip archive for submission. With `--submit` and a logged
+in account it uploads the archive to the given registry endpoint.
+
+Full details are in [docs/clm.md](docs/clm.md).
 
 ## Examples
 
-The [`examples/`](examples) folder contains runnable programs:
+The `examples` folder contains runnable programs:
 
-| File | Shows off |
-| --- | --- |
-| [`hello.ccpl`](examples/hello.ccpl) | Printing and variables |
-| [`controlflow.ccpl`](examples/controlflow.ccpl) | Loops, `if`/`else`, string concat |
-| [`features.ccpl`](examples/features.ccpl) | Hex/float literals, floor-mod, `and`/`or`/`not` |
-| [`fib.ccpl`](examples/fib.ccpl) | Recursion |
-| [`lowlevel.ccpl`](examples/lowlevel.ccpl) | Native types, pointers, casts, `malloc` |
-| [`getdemo.ccpl`](examples/getdemo.ccpl) + [`mathlib.ccpl`](examples/mathlib.ccpl) | Modules with `get` |
-| [`bench.ccpl`](examples/bench.ccpl) | Tight loops and native-speed output |
+* `hello.ccpl` shows printing and variables.
+* `controlflow.ccpl` shows loops, branches, and string concatenation.
+* `features.ccpl` shows number formats, floor modulo, and logic.
+* `fib.ccpl` shows recursion.
+* `lowlevel.ccpl` shows native types, pointers, casts, and `malloc`.
+* `getdemo.ccpl` with `mathlib.ccpl` shows modules.
+* `bench.ccpl` shows tight loops and native speed output.
+* `ffi_c.ccpl` calls C functions from `msvcrt.dll` and `kernel32.dll`.
+* `ffi_python.ccpl` calls Python functions and evaluates Python code.
+* `ffi_cpp` contains a C++ library and a program that calls it.
 
 ```bat
-coolc examples\bench.ccpl --run --fast
+build\coolc.exe examples\bench.ccpl --run --fast
 ```
 
 ## Building from source
 
-Requirements: Windows and [TinyCC](https://bellard.org/tcc/). TCC is tiny (~1 MB), so it is often easier to grab a release.
+Requirements are Windows and TinyCC. TCC is small, so a release is often the
+easiest route.
 
 ```bat
 build.bat
 ```
 
-Or invoke TCC directly:
+Or call TCC directly:
 
 ```bat
 tcc src\compiler.c -o build\coolc.exe
+tcc src\clm.c -o build\clm.exe "%WINDIR%\System32\ws2_32.dll" "%WINDIR%\System32\shell32.dll"
 copy src\runtime.h build\runtime.h
 ```
 
-The compiler emits C to a temporary file, runs `tcc` on it, and deletes it. Use `--show-c` to inspect the generated C.
+The compiler writes C to a temporary file, runs `tcc` on it, and deletes the
+temporary file. Use `--show-c` to inspect the generated C.
+
+## Testing
+
+`tests\run.ps1` builds and runs every regression case, checks the expected
+failure diagnostics, exercises the byte order mark path, and runs the foreign
+function tests when the needed compilers are present.
+
+```powershell
+.\tests\run.ps1
+```
+
+The same script runs in CI on every push and pull request.
 
 ## Project layout
 
-```
+```text
 ccpl/
-â”œâ”€â”€ src/
-â”‚   â”œâ”€â”€ compiler.c      # the whole compiler: lexer, parser, codegen, CLI
-â”‚   â”œâ”€â”€ clm.c           # the clm package manager
-â”‚   â””â”€â”€ runtime.h       # runtime helpers injected into every program
-â”œâ”€â”€ examples/           # sample .ccpl programs
-â”œâ”€â”€ docs/               # language reference and guides
-â”œâ”€â”€ build.bat           # build script for the compiler and clm
-â””â”€â”€ LICENSE             # GNU GPL v3
+  src/
+    compiler.c      the compiler: lexer, parser, code generator, command line
+    clm.c           the package manager
+    runtime.h       runtime injected into every compiled program
+    version.h       shared version define
+  examples/         sample programs
+  tests/            regression cases and the test runner
+  docs/             language, FFI, package manager, and getting started guides
+  build.bat         build script for the compiler and clm
+  VERSION           version used by CI and the build
+  LICENSE           GNU GPL v3
 ```
 
 ## Related repositories
 
-| Project | Description | License |
-| --- | --- | --- |
-| **ccpl** | Compiler and language implementation (this repo) | GPL-3.0 |
-| **ccpl-toolchain** | Ready-to-run Windows toolchain bundle | GPL-3.0 |
-| **ccpl-packages** | The `clm` package registry | MIT |
-| **vscode-ccpl** | VS Code syntax highlighting | MIT |
+* [ccpl](https://github.com/ccpl-lang/ccpl) is this compiler and language
+  implementation, under GPL v3.
+* [the toolchain repository](https://github.com/ccpl-lang/ccpl-toolchain) is a
+  ready to run Windows bundle, under GPL v3.
+* [the package registry](https://github.com/ccpl-lang/ccpl-packages) is the
+  registry used by `clm`, under MIT.
+* [the VS Code extension](https://github.com/ccpl-lang/vscode-ccpl) adds syntax
+  highlighting, under MIT.
 
 ## License
 
-CCPL is free software: you can redistribute it and/or modify it under the terms of the
-**GNU General Public License** as published by the Free Software Foundation, either
-version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE).
+CCPL is free software. You can redistribute it and modify it under the terms of
+the GNU General Public License, version 3 or any later version. See `LICENSE`.
 
-The bundled [TinyCC](https://bellard.org/tcc/) toolchain is distributed under its own
-(LGPL) terms â€” see the notices in the `ccpl-toolchain` repository.
+The bundled TinyCC toolchain is distributed under its own LGPL terms. See the
+notices in the `ccpl-toolchain` repository.

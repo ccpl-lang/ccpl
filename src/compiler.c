@@ -1,4 +1,4 @@
-/* coolc - compiler for CCPL (Cool Compilable Programming Language).
+/* coolc: compiler for CCPL (Cool Compilable Programming Language).
  * Lua-like syntax, mixed dynamic + native low-level programming.
  * Emits C code compiled by TinyCC into a native executable.
  * No interpreter anywhere. */
@@ -9,8 +9,9 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <windows.h>
+#include "version.h"
 
-#define COOLC_VERSION "1.0"
+#define COOLC_VERSION CCPL_VERSION
 
 /* ---------------------------------- utils --------------------------------- */
 
@@ -92,6 +93,7 @@ static char *read_file_bytes(const char *path, long *out_len) {
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
     long len = ftell(f);
+    if (len < 0) { fclose(f); return NULL; }
     fseek(f, 0, SEEK_SET);
     char *buf = xmalloc((size_t)len + 1);
     if (len > 0 && fread(buf, 1, (size_t)len, f) != (size_t)len) {
@@ -129,7 +131,8 @@ static const char *KEYWORDS[] = {
     "do", "repeat", "until", "for", "return", "break", "continue",
     "get", "and", "or", "not", "true", "false", "nil",
     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-    "f32", "f64", "bool", "char", "ptr", NULL
+    "f32", "f64", "bool", "char", "ptr", "cstr",
+    "extern", "from", "as", NULL
 };
 
 static int is_kw(const char *s) {
@@ -198,6 +201,10 @@ static void lex(Lexer *l, const char *src) {
     l->src = src;
     l->pos = 0;
     l->line = 1;
+    /* Skip a UTF 8 byte order mark, which Windows editors like to add. */
+    if ((unsigned char)src[0] == 0xEF && src[1] && (unsigned char)src[1] == 0xBB &&
+        src[2] && (unsigned char)src[2] == 0xBF)
+        l->pos = 3;
     while (1) {
         char c = src[l->pos];
         if (c == 0) { tk_push(l, TK_EOF, l->line, 0, 0, NULL); return; }
@@ -306,7 +313,7 @@ typedef enum {
     N_UNOP, N_BINOP, N_CALL, N_CAST, N_DEREF, N_ADDR, N_INDEX,
     N_LOCAL, N_ASSIGN, N_EXPR,
     N_IF, N_WHILE, N_REPEAT, N_FOR, N_RETURN, N_BREAK, N_CONTINUE,
-    N_FUNCDEF, N_GET
+    N_FUNCDEF, N_EXTERN, N_GET
 } NodeKind;
 
 struct Node {
@@ -322,7 +329,7 @@ struct Node {
         struct { const char *typ; Node *a; } cast;
         struct { Node *a; } unary;
         struct { Node *base, *idx; } index;
-        struct { char *name; char *typ; Node *value; } declar;
+        struct { char *name; char *typ; Node *value; char *cname; int is_global; } declar;
         struct { Node *lhs; Node *value; } assign;
         struct { Node *e; } expr;
         struct { Vec *branches; Vec *elsep; } ifn;
@@ -331,6 +338,7 @@ struct Node {
         struct { char *var; Node *start, *limit, *step; Vec *body; } forn;
         struct { Node *value; } ret;
         struct { char *name; Vec *params; Vec *body; char *rettype; } func;
+        struct { char *name; Vec *params; char *rettype; char *kind; char *lib; char *symbol; } ext;
     } u;
 };
 
@@ -386,6 +394,9 @@ static Node *parse_unary(Parser *p);
 static Node *mk_deref(Token *t, Parser *p);
 static Node *mk_addr(Token *t, Parser *p);
 
+/* Depth of nested blocks while parsing. Top level statements have depth 0. */
+static int g_parse_depth = 0;
+
 /* native type keywords -> C types */
 static const char *type_cname(const char *kw) {
     if (!strcmp(kw, "i8")) return "int8_t";
@@ -400,7 +411,8 @@ static const char *type_cname(const char *kw) {
     if (!strcmp(kw, "f64")) return "double";
     if (!strcmp(kw, "bool")) return "bool";
     if (!strcmp(kw, "char")) return "char";
-    if (!strcmp(kw, "ptr")) return "void";
+    if (!strcmp(kw, "cstr")) return "char *";
+    if (!strcmp(kw, "ptr")) return "void *";
     return NULL;
 }
 
@@ -650,6 +662,7 @@ static Node *parse_assign(Parser *p) {
             lhs = n;
         }
     }
+    if (!is_op(p, "=")) fail(peek(p, 0)->line, "expected '=' in assignment");
     nextt(p); /* '=' */
     Node *n = mk(N_ASSIGN, line);
     n->u.assign.lhs = lhs;
@@ -659,10 +672,9 @@ static Node *parse_assign(Parser *p) {
 
 typedef struct { char *name; char *typ; } Param; /* typ NULL = dynamic cval */
 
-static Node *parse_function(Parser *p) {
-    Token *k = nextt(p);
-    Token *name = nextt(p);
-    if (name->kind != TK_NAME) fail(name->line, "expected function name");
+/* Parse "(a, b: i32, c)" into a vector of Param. The opening paren is the
+ * current token on entry and is consumed here. */
+static Vec *parse_params(Parser *p) {
     Vec *params = new_vec();
     if (is_op(p, "(")) {
         nextt(p);
@@ -682,11 +694,24 @@ static Node *parse_function(Parser *p) {
         }
         nextt(p);
     }
+    return params;
+}
+
+static char *parse_rettype(Parser *p) {
     char *rettype = NULL;
     if (is_op(p, ":")) {
         nextt(p);
         rettype = parse_type(p);
     }
+    return rettype;
+}
+
+static Node *parse_function(Parser *p) {
+    Token *k = nextt(p);
+    Token *name = nextt(p);
+    if (name->kind != TK_NAME) fail(name->line, "expected function name");
+    Vec *params = parse_params(p);
+    char *rettype = parse_rettype(p);
     Vec *body = parse_block(p);
     if (!is_kwe(p, "end")) fail(name->line, "expected 'end' to close function '%s'", name->text);
     nextt(p);
@@ -695,6 +720,46 @@ static Node *parse_function(Parser *p) {
     n->u.func.params = params;
     n->u.func.body = body;
     n->u.func.rettype = rettype;
+    return n;
+}
+
+/* extern "c" func name(params): ret from "lib.dll" [as "symbol"]
+ * extern "c++" func name(params): ret from "lib.dll" [as "mangled"]
+ * extern "python" func name(params): ret from "module" [as "attribute"]
+ * The language string after `extern` selects the ABI. */
+static Node *parse_extern(Parser *p) {
+    Token *k = nextt(p);
+    Token *kind = nextt(p);
+    if (kind->kind != TK_STR) fail(kind->line, "expected an ABI string after 'extern'");
+    if (!is_kwe(p, "func")) fail(peek(p, 0)->line, "expected 'func' after the ABI name");
+    nextt(p);
+    Token *name = nextt(p);
+    if (name->kind != TK_NAME) fail(name->line, "expected a foreign function name");
+    Vec *params = parse_params(p);
+    char *rettype = parse_rettype(p);
+    if (!is_kwe(p, "from")) fail(peek(p, 0)->line, "expected 'from' before the library name");
+    nextt(p);
+    Token *lib = nextt(p);
+    if (lib->kind != TK_STR) fail(lib->line, "expected a library or module string after 'from'");
+    char *symbol = NULL;
+    if (is_kwe(p, "as")) {
+        nextt(p);
+        Token *sym = nextt(p);
+        if (sym->kind != TK_STR) fail(sym->line, "expected a symbol string after 'as'");
+        symbol = sym->text;
+    }
+    if (!strcmp(kind->text, "c") || !strcmp(kind->text, "c++") || !strcmp(kind->text, "python")) {
+        /* ok */
+    } else {
+        fail(kind->line, "unknown ABI '%s' (expected \"c\", \"c++\" or \"python\")", kind->text);
+    }
+    Node *n = mk(N_EXTERN, k->line);
+    n->u.ext.name = name->text;
+    n->u.ext.params = params;
+    n->u.ext.rettype = rettype;
+    n->u.ext.kind = kind->text;
+    n->u.ext.lib = lib->text;
+    n->u.ext.symbol = symbol;
     return n;
 }
 
@@ -793,6 +858,7 @@ static Node *parse_stmt(Parser *p) {
     if (t->kind == TK_KW) {
         if (!strcmp(t->text, "var") || !strcmp(t->text, "variable")) return parse_local(p);
         if (!strcmp(t->text, "func")) return parse_function(p);
+        if (!strcmp(t->text, "extern")) return parse_extern(p);
         if (!strcmp(t->text, "if")) return parse_if(p);
         if (!strcmp(t->text, "while")) return parse_while(p);
         if (!strcmp(t->text, "repeat")) return parse_repeat(p);
@@ -810,6 +876,8 @@ static Node *parse_stmt(Parser *p) {
         }
         if (!strcmp(t->text, "get")) {
             int line = t->line;
+            if (g_parse_depth > 0)
+                fail(line, "'get' is only allowed at the top level of a file");
             nextt(p);
             Token *path = nextt(p);
             if (path->kind != TK_STR) fail(path->line, "expected a string path after 'get'");
@@ -844,13 +912,16 @@ static Node *parse_stmt(Parser *p) {
 
 static Vec *parse_block(Parser *p) {
     Vec *stmts = new_vec();
+    g_parse_depth++;
     while (1) {
         skip_seps(p);
         Token *t = peek(p, 0);
         if (t->kind == TK_EOF) fail(t->line, "unexpected end of file (missing 'end')");
         if (t->kind == TK_KW && (!strcmp(t->text, "end") || !strcmp(t->text, "elseif") ||
-                                 !strcmp(t->text, "else") || !strcmp(t->text, "until")))
+                                 !strcmp(t->text, "else") || !strcmp(t->text, "until"))) {
+            g_parse_depth--;
             return stmts;
+        }
         vec_push(stmts, parse_stmt(p));
     }
 }
@@ -867,18 +938,61 @@ static Vec *parse_file(Parser *p) {
 
 /* ------------------------------ get / import ------------------------------ */
 
-static char **g_loaded = NULL;
-static int g_nloaded = 0;
+/* Import bookkeeping. A module can be pulled in whole, or one function at a
+ * time, in any order, and each definition is spliced at most once. */
+typedef struct {
+    char *abs;
+    int full;            /* whole module imported */
+    int init_done;       /* top level statements already spliced */
+    char **funcs;        /* names of functions already spliced */
+    int nfuncs;
+} ModState;
 
-static int loaded_abs(const char *abs) {
-    for (int i = 0; i < g_nloaded; i++)
-        if (!_stricmp(g_loaded[i], abs)) return 1;
+static ModState *g_mods = NULL;
+static int g_nmods = 0;
+
+static ModState *mod_state(const char *abs) {
+    for (int i = 0; i < g_nmods; i++)
+        if (!_stricmp(g_mods[i].abs, abs)) return &g_mods[i];
+    g_mods = realloc(g_mods, (size_t)(g_nmods + 1) * sizeof(ModState));
+    if (!g_mods) fail(0, "out of memory");
+    memset(&g_mods[g_nmods], 0, sizeof(ModState));
+    g_mods[g_nmods].abs = xstrdup(abs);
+    return &g_mods[g_nmods++];
+}
+
+static int mod_func_loaded(ModState *m, const char *name) {
+    for (int i = 0; i < m->nfuncs; i++)
+        if (!strcmp(m->funcs[i], name)) return 1;
     return 0;
 }
 
-static void mark_loaded(const char *abs) {
-    g_loaded = realloc(g_loaded, (size_t)(g_nloaded + 1) * sizeof(char *));
-    g_loaded[g_nloaded++] = xstrdup(abs);
+static void mod_mark_func(ModState *m, const char *name) {
+    if (mod_func_loaded(m, name)) return;
+    m->funcs = realloc(m->funcs, (size_t)(m->nfuncs + 1) * sizeof(char *));
+    if (!m->funcs) fail(0, "out of memory");
+    m->funcs[m->nfuncs++] = xstrdup(name);
+}
+
+/* Drop definitions that were already spliced, and drop the module init
+ * statements when they have run once already. */
+static Vec *mod_filter(Vec *stmts, ModState *m) {
+    Vec *out = new_vec();
+    for (int i = 0; i < stmts->n; i++) {
+        Node *s = stmts->d[i];
+        if (s->k == N_FUNCDEF) {
+            if (mod_func_loaded(m, s->u.func.name)) continue;
+            mod_mark_func(m, s->u.func.name);
+            vec_push(out, s);
+        } else if (s->k == N_EXTERN) {
+            vec_push(out, s);
+        } else {
+            if (m->init_done) continue;
+            m->init_done = 1;
+            vec_push(out, s);
+        }
+    }
+    return out;
 }
 
 static char *canon_abs(const char *p) {
@@ -1112,27 +1226,40 @@ static Vec *load_ccpl(const char *path, const char *dir, int line) {
     char *src = read_file_bytes(abs, &len);
     if (!src) fail(line, "cannot read module '%s'", abs);
 
-    if (loaded_abs(abs)) {
-        free(abs);
-        free(modname);
-        free(src);
-        return new_vec();
+    {
+        ModState *m = mod_state(abs);
+        if (func) {
+            if (mod_func_loaded(m, func)) {
+                free(abs);
+                free(modname);
+                free(src);
+                return new_vec();
+            }
+        } else if (m->full) {
+            free(abs);
+            free(modname);
+            free(src);
+            return new_vec();
+        }
+
+        Lexer lx = {0};
+        lex(&lx, src);
+        Parser p = {lx.tok, lx.ntok, 0};
+        Vec *stmts = parse_file(&p);
+        if (func) stmts = select_func(stmts, func, line);
+        stmts = mod_filter(stmts, m);
+        if (!func) m->full = 1;
+
+        {
+            char *subdir = dir_of(abs);
+            Vec *out = expand_gets(stmts, subdir);
+            free(subdir);
+            free(abs);
+            free(modname);
+            free(src);
+            return out;
+        }
     }
-    mark_loaded(abs);
-
-    Lexer lx = {0};
-    lex(&lx, src);
-    Parser p = {lx.tok, lx.ntok, 0};
-    Vec *stmts = parse_file(&p);
-    if (func) stmts = select_func(stmts, func, line);
-
-    char *subdir = dir_of(abs);
-    Vec *out = expand_gets(stmts, subdir);
-    free(subdir);
-    free(abs);
-    free(modname);
-    free(src);
-    return out;
 }
 
 static Vec *expand_gets(Vec *stmts, const char *dir) {
@@ -1167,7 +1294,16 @@ static Vec *expand_gets(Vec *stmts, const char *dir) {
 
 /* --------------------------- function collection -------------------------- */
 
-typedef struct { char *name; Vec *params; Vec *body; char *rettype; } FuncDef;
+typedef struct {
+    char *name;
+    Vec *params;
+    Vec *body;
+    char *rettype;
+    int ext;         /* 1 for an extern declaration */
+    char *kind;      /* "c", "c++" or "python" */
+    char *lib;
+    char *symbol;
+} FuncDef;
 
 static Vec *g_funcs = NULL;
 
@@ -1187,13 +1323,21 @@ static char *mangle(const char *name) {
     return s;
 }
 
+/* name of the generated wrapper for an extern declaration */
+static char *ext_mangle(const char *name) {
+    char *s = xmalloc(strlen(name) + 10);
+    sprintf(s, "ccpl_ext_%s", name);
+    return s;
+}
+
 static void collect_walk(Vec *funcs, Vec *stmts);
 
 static int is_builtin_func(const char *name) {
     static const char *B[] = {
         "say", "oh", "hey",
         "tonumber", "tostring",
-        "malloc", "calloc", "realloc", "free", NULL
+        "malloc", "calloc", "realloc", "free",
+        "pyexec", "pyeval", NULL
     };
     for (int i = 0; B[i]; i++)
         if (!strcmp(B[i], name)) return 1;
@@ -1209,6 +1353,7 @@ static void collect_add(Vec *funcs, Node *n) {
         if (!strcmp(f->name, name)) fail(n->line, "duplicate function '%s'", name);
     }
     FuncDef *f = xmalloc(sizeof(FuncDef));
+    memset(f, 0, sizeof *f);
     f->name = name;
     f->params = n->u.func.params;
     f->body = n->u.func.body;
@@ -1217,11 +1362,40 @@ static void collect_add(Vec *funcs, Node *n) {
     collect_walk(funcs, n->u.func.body);
 }
 
+static void collect_ext(Vec *funcs, Node *n) {
+    char *name = n->u.ext.name;
+    if (is_builtin_func(name))
+        fail(n->line, "'%s' is a builtin and cannot be redefined", name);
+    for (int i = 0; i < funcs->n; i++) {
+        FuncDef *f = funcs->d[i];
+        if (!strcmp(f->name, name)) fail(n->line, "duplicate function '%s'", name);
+    }
+    FuncDef *f = xmalloc(sizeof(FuncDef));
+    memset(f, 0, sizeof *f);
+    f->name = name;
+    f->params = n->u.ext.params;
+    f->rettype = n->u.ext.rettype;
+    f->ext = 1;
+    f->kind = n->u.ext.kind;
+    f->lib = n->u.ext.lib;
+    f->symbol = n->u.ext.symbol ? n->u.ext.symbol : name;
+    if (strcmp(f->kind, "python")) {
+        for (int i = 0; i < f->params->n; i++) {
+            Param *pm = f->params->d[i];
+            if (!pm->typ)
+                fail(n->line, "extern \"%s\" parameter '%s' needs a native type, for example ': i32' or ': cstr'",
+                     f->kind, pm->name);
+        }
+    }
+    vec_push(funcs, f);
+}
+
 static void collect_walk(Vec *funcs, Vec *stmts) {
     for (int i = 0; i < stmts->n; i++) {
         Node *s = stmts->d[i];
         switch (s->k) {
             case N_FUNCDEF: collect_add(funcs, s); break;
+            case N_EXTERN: collect_ext(funcs, s); break;
             case N_IF:
                 for (int j = 0; j < s->u.ifn.branches->n; j++) {
                     Branch *br = s->u.ifn.branches->d[j];
@@ -1272,14 +1446,43 @@ static Sym *scope_lookup(const char *name) {
     return NULL;
 }
 
-/* expression value classes */
-enum { CL_CVAL = 0, CL_NUM = 1, CL_PTR = 2, CL_BOOL = 3 };
+/* Expression value classes. Pointer depth is part of the class so that
+ * multi level pointers (`u8**`, `ptr*`) type check correctly. */
+enum {
+    CL_CVAL = 0,
+    CL_NUM = 1,
+    CL_BOOL = 2,
+    CL_CSTR = 3,
+    CL_PTR1 = 4,
+    CL_PTR2 = 5,
+    CL_PTR3 = 6,
+    CL_PTR4 = 7,
+    CL_PTR5 = 8,
+    CL_PTR6 = 9,
+    CL_PTR7 = 10,
+    CL_PTR8 = 11
+};
 
+static int is_ptr(int cls) { return cls >= CL_PTR1 && cls <= CL_PTR8; }
+static int is_ptr_like(int cls) { return is_ptr(cls) || cls == CL_CSTR; }
+static int ptr_depth(int cls) { return cls - CL_PTR1 + 1; }
+static int ptr_class(int depth) {
+    if (depth < 1) depth = 1;
+    if (depth > 8) depth = 8;
+    return CL_PTR1 + depth - 1;
+}
 static int is_numlike(int cls) { return cls == CL_NUM || cls == CL_BOOL; }
 
+/* Map a C type string back to a value class. Only an exact `char *` is a C
+ * string; anything with more stars is a plain pointer at that depth. */
 static int class_of_ctype(const char *ctype) {
     if (!ctype) return CL_CVAL;
-    if (strchr(ctype, '*') || !strcmp(ctype, "void")) return CL_PTR;
+    if (!strcmp(ctype, "char *")) return CL_CSTR;
+    {
+        int stars = 0;
+        for (const char *c = ctype; *c; c++) if (*c == '*') stars++;
+        if (stars > 0) return ptr_class(stars);
+    }
     return CL_NUM;
 }
 
@@ -1339,13 +1542,34 @@ static const char *dbl_lit(double d) {
 static char *expr_c(Node *n, int *cls);
 static void stmt(Buf *out, Node *n, int func_body);
 
-/* wrap a native expression into a dynamic cval (heap string) */
+/* wrap a native expression into a dynamic cval */
 static char *as_cval(const char *e, int cls) {
     Buf b = {NULL, 0, 0};
     if (cls == CL_CVAL) buf_put(&b, e);
-    else if (cls == CL_PTR) buf_putf(&b, "cvnum((double)(intptr_t)(%s))", e);
+    else if (cls == CL_CSTR) buf_putf(&b, "cvstr(%s)", e);
+    else if (is_ptr(cls)) buf_putf(&b, "cvnum((double)(intptr_t)(%s))", e);
     else if (cls == CL_BOOL) buf_putf(&b, "cvbool((double)(%s))", e);
     else buf_putf(&b, "cvnum((double)(%s))", e);
+    return b.s;
+}
+
+/* Convert an expression to the C type `typ` as an argument, handling the
+ * dynamic-to-native and string-to-cstr directions. */
+static char *as_typed(const char *e, int cls, const char *typ) {
+    Buf b = {NULL, 0, 0};
+    int target = class_of_ctype(typ);
+    if (cls == CL_CVAL) {
+        if (target == CL_CSTR || is_ptr(target) || !strcmp(typ, "void *"))
+            buf_putf(&b, "(%s)cv_tocstr(%s)", typ, e);
+        else
+            buf_putf(&b, "(%s)cvtod(%s)", typ, e);
+    } else if (cls == CL_CSTR && target != CL_CSTR && is_ptr(target)) {
+        buf_putf(&b, "(%s)(%s)", typ, e);
+    } else if (is_ptr(cls) && target == CL_CSTR) {
+        buf_putf(&b, "(%s)(%s)", typ, e);
+    } else {
+        buf_putf(&b, "(%s)(%s)", typ, e);
+    }
     return b.s;
 }
 
@@ -1440,20 +1664,27 @@ static char *expr_c(Node *n, int *cls) {
         case N_CAST: {
             int ac;
             char *a = expr_c(n->u.cast.a, &ac);
+            int target = class_of_ctype(n->u.cast.typ);
             if (ac == CL_CVAL) {
-                fail(n->line, "cannot cast a dynamic value to native type '%s'", n->u.cast.typ);
+                if (target == CL_CSTR || is_ptr(target))
+                    buf_putf(&b, "((%s)cv_tocstr(%s))", n->u.cast.typ, a);
+                else
+                    buf_putf(&b, "((%s)cvtod(%s))", n->u.cast.typ, a);
+            } else {
+                buf_putf(&b, "((%s)(%s))", n->u.cast.typ, a);
             }
-            buf_putf(&b, "((%s)(%s))", n->u.cast.typ, a);
-            *cls = class_of_ctype(n->u.cast.typ);
+            *cls = target;
             free(a);
             break;
         }
         case N_DEREF: {
             int ac;
             char *a = expr_c(n->u.unary.a, &ac);
-            if (ac != CL_PTR) fail(n->line, "'*' requires a pointer, got a non-pointer value");
+            int depth;
+            if (!is_ptr_like(ac)) fail(n->line, "'*' requires a pointer, got a non-pointer value");
+            depth = (ac == CL_CSTR) ? 1 : ptr_depth(ac);
             buf_putf(&b, "(*%s)", a);
-            *cls = CL_NUM;   /* best-effort; real type comes from C */
+            *cls = (depth == 1) ? CL_NUM : ptr_class(depth - 1);
             free(a);
             break;
         }
@@ -1462,7 +1693,7 @@ static char *expr_c(Node *n, int *cls) {
             char *a = expr_c(n->u.unary.a, &ac);
             if (ac == CL_CVAL) fail(n->line, "cannot take the address of a dynamic value");
             buf_putf(&b, "(&%s)", a);
-            *cls = CL_PTR;
+            *cls = (ac == CL_CSTR) ? CL_PTR2 : (is_ptr(ac) ? ptr_class(ptr_depth(ac) + 1) : CL_PTR1);
             free(a);
             break;
         }
@@ -1470,10 +1701,12 @@ static char *expr_c(Node *n, int *cls) {
             int bc, ic;
             char *base = expr_c(n->u.index.base, &bc);
             char *idx = expr_c(n->u.index.idx, &ic);
-            if (bc != CL_PTR) fail(n->line, "'[]' requires a pointer base");
+            int depth;
+            if (!is_ptr_like(bc)) fail(n->line, "'[]' requires a pointer base");
             if (ic == CL_CVAL) fail(n->line, "index expression must be native");
+            depth = (bc == CL_CSTR) ? 1 : ptr_depth(bc);
             buf_putf(&b, "(%s)[%s]", base, idx);
-            *cls = CL_NUM;
+            *cls = (depth == 1) ? CL_NUM : ptr_class(depth - 1);
             free(base);
             free(idx);
             break;
@@ -1484,7 +1717,7 @@ static char *expr_c(Node *n, int *cls) {
             char *L = expr_c(n->u.binop.l, &lc);
             char *R = expr_c(n->u.binop.r, &rc);
             if (lc == CL_CVAL || rc == CL_CVAL) {
-                if (lc == CL_PTR || rc == CL_PTR)
+                if (is_ptr(lc) || is_ptr(rc))
                     fail(n->line, "cannot mix pointers with dynamic values");
                 if (lc != CL_CVAL) {
                     char *w = as_cval(L, lc);
@@ -1499,10 +1732,11 @@ static char *expr_c(Node *n, int *cls) {
                     rc = CL_CVAL;
                 }
                 if (!strcmp(op, "and") || !strcmp(op, "or")) {
+                    int t = cg_counter++;
                     if (!strcmp(op, "and"))
-                        buf_putf(&b, "(cvtruthy(%s) ? %s : %s)", L, R, L);
+                        buf_putf(&b, "({ cval _t%d = %s; cvtruthy(_t%d) ? %s : _t%d; })", t, L, t, R, t);
                     else
-                        buf_putf(&b, "(cvtruthy(%s) ? %s : %s)", L, L, R);
+                        buf_putf(&b, "({ cval _t%d = %s; cvtruthy(_t%d) ? _t%d : %s; })", t, L, t, t, R);
                     *cls = CL_CVAL;
                 } else if (!strcmp(op, "..")) {
                     buf_putf(&b, "cv_concat(%s, %s)", L, R);
@@ -1526,12 +1760,14 @@ static char *expr_c(Node *n, int *cls) {
                 }
             } else {
                 /* native raw arithmetic */
-                if (!strcmp(op, "and")) {
-                    buf_putf(&b, "((%s) ? (%s) : (%s))", L, R, L);
-                    *cls = (lc == CL_BOOL && rc == CL_BOOL) ? CL_BOOL : CL_NUM;
-                } else if (!strcmp(op, "or")) {
-                    buf_putf(&b, "((%s) ? (%s) : (%s))", L, L, R);
-                    *cls = (lc == CL_BOOL && rc == CL_BOOL) ? CL_BOOL : CL_NUM;
+                if (!strcmp(op, "and") || !strcmp(op, "or")) {
+                    int t = cg_counter++;
+                    if (!strcmp(op, "and"))
+                        buf_putf(&b, "({ __typeof__(%s) _t%d = %s; (_t%d) ? (%s) : _t%d; })", L, t, L, t, R, t);
+                    else
+                        buf_putf(&b, "({ __typeof__(%s) _t%d = %s; (_t%d) ? _t%d : (%s); })", L, t, L, t, t, R);
+                    if (is_ptr(lc) && lc == rc) *cls = lc;
+                    else *cls = (lc == CL_BOOL && rc == CL_BOOL) ? CL_BOOL : CL_NUM;
                 } else if (!strcmp(op, "..")) {
                     char *wl = as_cval(L, lc);
                     char *wr = as_cval(R, rc);
@@ -1556,7 +1792,8 @@ static char *expr_c(Node *n, int *cls) {
                     if (!raw) fail(n->line, "bad binary op '%s'", op);
                     buf_putf(&b, "(%s %s %s)", L, raw, R);
                     if (cmp) *cls = CL_BOOL;
-                    else if (lc == CL_PTR || rc == CL_PTR) *cls = CL_PTR;
+                    else if (is_ptr_like(lc)) *cls = lc;
+                    else if (is_ptr_like(rc)) *cls = rc;
                     else *cls = CL_NUM;
                 }
             }
@@ -1575,21 +1812,31 @@ static char *expr_c(Node *n, int *cls) {
                 char *a = expr_c(args->d[i], &ac);
                 if (i) buf_put(&al, ", ");
                 if (is_mem) {
-                    if (ac == CL_CVAL)
+                    if (!strcmp(fname, "realloc") && i == 0) {
+                        if (!is_ptr_like(ac)) fail(n->line, "realloc() expects a pointer as its first argument");
+                        buf_put(&al, a);
+                    } else if (ac == CL_CVAL) {
                         buf_putf(&al, "(size_t)cvtod(%s)", a);
-                    else
+                    } else {
                         buf_putf(&al, "(size_t)(%s)", a);
+                    }
                 } else if (!strcmp(fname, "free")) {
-                    if (ac != CL_PTR) fail(n->line, "free() expects a pointer");
+                    if (!is_ptr_like(ac)) fail(n->line, "free() expects a pointer");
                     buf_put(&al, a);
+                } else if (!strcmp(fname, "pyexec") || !strcmp(fname, "pyeval")) {
+                    char *w = as_typed(a, ac, "char *");
+                    buf_put(&al, w);
+                    free(w);
+                } else if (fd && !strcmp(fd->kind ? fd->kind : "", "python")) {
+                    char *w = as_cval(a, ac);
+                    buf_put(&al, w);
+                    free(w);
                 } else if (fd && i < fd->params->n && ((Param *)fd->params->d[i])->typ) {
                     Param *pm = fd->params->d[i];
-                    if (ac == CL_CVAL) {
-                        if (class_of_ctype(pm->typ) == CL_PTR)
-                            fail(n->line, "argument %d of '%s' expects a native pointer of type '%s'", i + 1, fname, pm->typ);
-                        buf_putf(&al, "(%s)cvtod(%s)", pm->typ, a);
-                    } else {
-                        buf_putf(&al, "(%s)(%s)", pm->typ, a);
+                    {
+                        char *w = as_typed(a, ac, pm->typ);
+                        buf_put(&al, w);
+                        free(w);
                     }
                 } else {
                     char *w = as_cval(a, ac);
@@ -1601,13 +1848,17 @@ static char *expr_c(Node *n, int *cls) {
             const char *as = al.s ? al.s : "";
             if (!strcmp(fname, "say") || !strcmp(fname, "hey")) {
                 fail(n->line, "%s() can only be called as a statement", fname);
+            } else if (!strcmp(fname, "pyexec") || !strcmp(fname, "pyeval")) {
+                if (args->n != 1) fail(n->line, "%s() expects 1 argument", fname);
+                buf_putf(&b, "%s(%s)", !strcmp(fname, "pyexec") ? "ccpl_py_exec" : "ccpl_py_eval", as);
+                *cls = CL_CVAL;
             } else if (is_mem) {
                 if ((!strcmp(fname, "malloc") || !strcmp(fname, "free")) && args->n != 1)
                     fail(n->line, "%s() expects 1 argument", fname);
                 if ((!strcmp(fname, "calloc") || !strcmp(fname, "realloc")) && args->n != 2)
                     fail(n->line, "%s() expects 2 arguments", fname);
                 buf_putf(&b, "%s(%s)", fname, as);
-                *cls = CL_PTR;
+                *cls = CL_PTR1;
             } else if (!strcmp(fname, "free")) {
                 if (args->n != 1) fail(n->line, "free() expects 1 argument");
                 buf_putf(&b, "free(%s)", as);
@@ -1618,6 +1869,14 @@ static char *expr_c(Node *n, int *cls) {
                                 : (!strcmp(fname, "tonumber") ? "cv_tonumber" : "cv_tostring");
                 buf_putf(&b, "%s(%s)", cfn, as);
                 *cls = CL_CVAL;
+            } else if (fd && fd->ext) {
+                if (args->n != fd->params->n)
+                    fail(n->line, "function '%s' expects %d argument(s), got %d",
+                         fname, fd->params->n, args->n);
+                char *mf = ext_mangle(fname);
+                buf_putf(&b, "%s(%s)", mf, as);
+                free(mf);
+                *cls = fd->rettype ? class_of_ctype(fd->rettype) : CL_CVAL;
             } else if (fd) {
                 if (args->n != fd->params->n)
                     fail(n->line, "function '%s' expects %d argument(s), got %d",
@@ -1653,37 +1912,53 @@ static void cond_line(Buf *out, Node *cond, const char *prefix) {
 static void stmt(Buf *out, Node *n, int func_body) {
     switch (n->k) {
         case N_LOCAL: {
-            char cname[64];
-            snprintf(cname, sizeof cname, "%s_%d", n->u.declar.name, cg_counter++);
+            char gen[192];
+            const char *cname;
+            int is_global = n->u.declar.is_global;
+            if (is_global && n->u.declar.cname) {
+                cname = n->u.declar.cname;
+            } else {
+                snprintf(gen, sizeof gen, "%s_%d", n->u.declar.name, cg_counter++);
+                cname = gen;
+            }
             if (n->u.declar.typ) {
-                scope_declare(n->u.declar.name, cname, n->u.declar.typ);
                 if (n->u.declar.value) {
                     int vc;
                     char *v = expr_c(n->u.declar.value, &vc);
-                    if (vc == CL_CVAL)
-                        fail(n->line, "cannot initialize native '%s %s' with a dynamic value; use a cast or raw constants",
-                             n->u.declar.typ, n->u.declar.name);
-                    linef(out, "%s %s = %s;", n->u.declar.typ, cname, v);
+                    char *w = as_typed(v, vc, n->u.declar.typ);
+                    if (!is_global) {
+                        scope_declare(n->u.declar.name, cname, n->u.declar.typ);
+                        linef(out, "%s %s = %s;", n->u.declar.typ, cname, w);
+                    } else {
+                        linef(out, "%s = %s;", cname, w);
+                    }
                     free(v);
-                } else {
+                    free(w);
+                } else if (!is_global) {
+                    scope_declare(n->u.declar.name, cname, n->u.declar.typ);
                     linef(out, "%s %s = 0;", n->u.declar.typ, cname);
                 }
             } else {
-                scope_declare(n->u.declar.name, cname, NULL);
                 if (n->u.declar.value) {
                     int vc;
                     char *v = expr_c(n->u.declar.value, &vc);
-                    if (is_numlike(vc)) {
+                    if (is_ptr(vc)) {
+                        free(v);
+                        fail(n->line, "cannot store a pointer in a dynamic variable '%s'; declare it native", n->u.declar.name);
+                    }
+                    {
                         char *w = as_cval(v, vc);
-                        linef(out, "cval %s = %s;", cname, w);
+                        if (!is_global) {
+                            scope_declare(n->u.declar.name, cname, NULL);
+                            linef(out, "cval %s = %s;", cname, w);
+                        } else {
+                            linef(out, "%s = %s;", cname, w);
+                        }
                         free(w);
-                    } else if (vc == CL_CVAL) {
-                        linef(out, "cval %s = %s;", cname, v);
-                    } else {
-                        fail(n->line, "cannot store a pointer in a dynamic variable; declare it native");
                     }
                     free(v);
-                } else {
+                } else if (!is_global) {
+                    scope_declare(n->u.declar.name, cname, NULL);
                     linef(out, "cval %s = cvnil();", cname);
                 }
             }
@@ -1698,28 +1973,33 @@ static void stmt(Buf *out, Node *n, int func_body) {
                 Sym *s = scope_lookup(lhs->u.text);
                 if (!s) fail(n->line, "cannot assign to undefined variable '%s'", lhs->u.text);
                 if (s->ctype) {
-                    if (vc == CL_CVAL) {
-                        linef(out, "%s = (%s)cvtod(%s);", s->cname, s->ctype, v);
-                    } else {
-                        linef(out, "%s = %s;", s->cname, v);
-                    }
+                    char *w = as_typed(v, vc, s->ctype);
+                    linef(out, "%s = %s;", s->cname, w);
+                    free(w);
                 } else {
-                    if (is_numlike(vc)) {
+                    if (is_ptr(vc)) {
+                        free(v);
+                        fail(n->line, "cannot assign a pointer to a dynamic variable '%s'; declare it native", lhs->u.text);
+                    }
+                    {
                         char *w = as_cval(v, vc);
                         linef(out, "%s = %s;", s->cname, w);
                         free(w);
-                    } else if (vc == CL_CVAL) {
-                        linef(out, "%s = %s;", s->cname, v);
-                    } else {
-                        fail(n->line, "cannot assign a pointer to a dynamic variable");
                     }
                 }
             } else {
                 int lc;
                 char *l = expr_c(lhs, &lc);
-                if (vc == CL_CVAL)
-                    fail(n->line, "cannot assign a dynamic value to a native memory location; use a cast");
-                linef(out, "%s = %s;", l, v);
+                if (vc == CL_CVAL) {
+                    if (ptr_depth(lc) >= 2)
+                        linef(out, "%s = (void *)cv_tocstr(%s);", l, v);
+                    else
+                        linef(out, "%s = (double)cvtod(%s);", l, v);
+                } else if (is_ptr(vc) && is_ptr(lc) && lc != vc) {
+                    linef(out, "%s = (void *)(%s);", l, v);
+                } else {
+                    linef(out, "%s = %s;", l, v);
+                }
                 free(l);
             }
             free(v);
@@ -1749,6 +2029,7 @@ static void stmt(Buf *out, Node *n, int func_body) {
                     write_indent(out);
                     buf_put(out, "if (");
                 } else {
+                    write_indent(out);
                     buf_put(out, "} else if (");
                 }
                 if (cls == CL_CVAL)
@@ -1759,16 +2040,22 @@ static void stmt(Buf *out, Node *n, int func_body) {
                 write_endline(out);
                 free(e);
                 ind++;
+                scope_push();
                 block_gen(out, br->body, func_body);
+                scope_pop();
                 ind--;
             }
             if (n->u.ifn.elsep) {
+                write_indent(out);
                 buf_put(out, "} else {");
                 write_endline(out);
                 ind++;
+                scope_push();
                 block_gen(out, n->u.ifn.elsep, func_body);
+                scope_pop();
                 ind--;
             }
+            write_indent(out);
             buf_put(out, "}");
             write_endline(out);
             break;
@@ -1789,9 +2076,12 @@ static void stmt(Buf *out, Node *n, int func_body) {
             write_endline(out);
             ind++;
             loop_depth++;
+            scope_push();
             block_gen(out, n->u.whil.body, func_body);
+            scope_pop();
             loop_depth--;
             ind--;
+            write_indent(out);
             buf_put(out, "}");
             write_endline(out);
             break;
@@ -1802,7 +2092,9 @@ static void stmt(Buf *out, Node *n, int func_body) {
             write_endline(out);
             ind++;
             loop_depth++;
+            scope_push();
             block_gen(out, n->u.rep.body, func_body);
+            scope_pop();
             loop_depth--;
             ind--;
             write_indent(out);
@@ -1821,7 +2113,7 @@ static void stmt(Buf *out, Node *n, int func_body) {
             break;
         }
         case N_FOR: {
-            char var[64], lim[64], stp[64];
+            char var[192], lim[32], stp[32];
             snprintf(var, sizeof var, "%s_%d", n->u.forn.var, cg_counter++);
             snprintf(lim, sizeof lim, "lim_%d", cg_counter++);
             snprintf(stp, sizeof stp, "stp_%d", cg_counter++);
@@ -1842,17 +2134,22 @@ static void stmt(Buf *out, Node *n, int func_body) {
             {
                 int lc;
                 char *l = expr_c(n->u.forn.limit, &lc);
-                linef(out, "double %s = cvtod(%s);", lim, as_cval(l, lc));
+                char *w = as_cval(l, lc);
+                linef(out, "double %s = cvtod(%s);", lim, w);
                 free(l);
+                free(w);
             }
             if (n->u.forn.step) {
                 int sc;
                 char *s = expr_c(n->u.forn.step, &sc);
-                linef(out, "double %s = cvtod(%s);", stp, as_cval(s, sc));
+                char *w = as_cval(s, sc);
+                linef(out, "double %s = cvtod(%s);", stp, w);
                 free(s);
+                free(w);
             } else {
                 linef(out, "double %s = 1.0;", stp);
             }
+            linef(out, "if (%s == 0) ccpl_die(\"for step must not be zero\");", stp);
             linef(out, "for (; %s >= 0 ? cvtod(%s) <= %s : cvtod(%s) >= %s; %s = cvnum(cvtod(%s) + %s)) {",
                     stp, var, lim, var, lim, var, var, stp);
             ind++;
@@ -1867,19 +2164,16 @@ static void stmt(Buf *out, Node *n, int func_body) {
             break;
         }
         case N_RETURN: {
+            if (!func_body) fail(n->line, "return outside a function");
             write_indent(out);
             buf_put(out, "return ");
             if (n->u.ret.value) {
                 int rc;
                 char *r = expr_c(n->u.ret.value, &rc);
                 if (cur_rettype) {
-                    if (rc == CL_CVAL) {
-                        if (class_of_ctype(cur_rettype) == CL_PTR)
-                            fail(n->line, "cannot return a dynamic value from a function returning '%s'", cur_rettype);
-                        buf_putf(out, "(%s)cvtod(%s)", cur_rettype, r);
-                    } else {
-                        buf_put(out, r);
-                    }
+                    char *w = as_typed(r, rc, cur_rettype);
+                    buf_put(out, w);
+                    free(w);
                 } else {
                     char *w = as_cval(r, rc);
                     buf_put(out, w);
@@ -1903,6 +2197,7 @@ static void stmt(Buf *out, Node *n, int func_body) {
             linef(out, "continue;");
             break;
         case N_FUNCDEF:
+        case N_EXTERN:
             break; /* hoisted to top level */
         default:
             fail(n->line, "internal: bad statement node");
@@ -1912,12 +2207,117 @@ static void stmt(Buf *out, Node *n, int func_body) {
 static void param_defs(Buf *out, Vec *params) {
     for (int i = 0; i < params->n; i++) {
         Param *pm = params->d[i];
-        char cname[64];
+        char cname[192];
         snprintf(cname, sizeof cname, "%s_%d", pm->name, cg_counter++);
         scope_declare(pm->name, cname, pm->typ);
         if (i) buf_put(out, ", ");
         if (pm->typ) buf_putf(out, "%s %s", pm->typ, cname);
         else buf_putf(out, "cval %s", cname);
+    }
+}
+
+/* Emit the wrapper for one extern declaration. Each wrapper resolves its
+ * symbol (or Python attribute) on first use and caches the result. */
+static void gen_extern(Buf *out, FuncDef *f) {
+    char *wf = ext_mangle(f->name);
+    int is_py = !strcmp(f->kind, "python");
+    int i;
+    Buf lesc = {NULL, 0, 0};
+    Buf sesc = {NULL, 0, 0};
+    esc_string_to(f->lib, &lesc);
+    esc_string_to(f->symbol, &sesc);
+
+    if (is_py) {
+        Buf pl = {NULL, 0, 0};
+        for (i = 0; i < f->params->n; i++) {
+            Param *pm = f->params->d[i];
+            if (i) buf_put(&pl, ", ");
+            buf_putf(&pl, "cval p_%d", i);
+            (void)pm;
+        }
+        linef(out, "static %s %s(%s) {", f->rettype ? f->rettype : "cval", wf, pl.s ? pl.s : "void");
+        free(pl.s);
+        ind++;
+        if (f->params->n == 0) {
+            linef(out, "cval _r = ccpl_py_call(%s, %s, 0, NULL);", lesc.s, sesc.s);
+        } else {
+            linef(out, "cval _a[%d];", f->params->n);
+            for (i = 0; i < f->params->n; i++)
+                linef(out, "_a[%d] = p_%d;", i, i);
+            linef(out, "cval _r = ccpl_py_call(%s, %s, %d, _a);", lesc.s, sesc.s, f->params->n);
+        }
+        if (f->rettype) {
+            char *w = as_typed("_r", CL_CVAL, f->rettype);
+            linef(out, "return %s;", w);
+            free(w);
+        } else {
+            linef(out, "return _r;");
+        }
+        ind--;
+        linef(out, "}");
+        free(wf);
+        free(lesc.s);
+        free(sesc.s);
+        return;
+    }
+
+    {
+        Buf pl = {NULL, 0, 0};
+        Buf ft = {NULL, 0, 0};   /* function pointer parameter types */
+        for (i = 0; i < f->params->n; i++) {
+            Param *pm = f->params->d[i];
+            if (i) { buf_put(&pl, ", "); buf_put(&ft, ", "); }
+            buf_putf(&pl, "%s p_%d", pm->typ, i);
+            buf_put(&ft, pm->typ);
+        }
+        if (f->params->n == 0) buf_put(&ft, "void");
+        linef(out, "static %s %s(%s) {", f->rettype ? f->rettype : "cval", wf, pl.s ? pl.s : "void");
+        free(pl.s);
+        ind++;
+        linef(out, "typedef %s (__cdecl *ccpl_fn_t)(%s);",
+              f->rettype ? f->rettype : "void", ft.s);
+        linef(out, "static ccpl_fn_t _fn = 0;");
+        linef(out, "if (!_fn) _fn = (ccpl_fn_t)ccpl_ffi_sym(%s, %s);", lesc.s, sesc.s);
+        {
+            Buf call = {NULL, 0, 0};
+            for (i = 0; i < f->params->n; i++) {
+                if (i) buf_put(&call, ", ");
+                buf_putf(&call, "p_%d", i);
+            }
+            if (f->rettype)
+                linef(out, "return _fn(%s);", call.s ? call.s : "");
+            else
+                linef(out, "_fn(%s);", call.s ? call.s : "");
+            free(call.s);
+        }
+        if (!f->rettype) linef(out, "return cvnil();");
+        ind--;
+        linef(out, "}");
+        free(ft.s);
+    }
+    free(wf);
+    free(lesc.s);
+    free(sesc.s);
+}
+
+/* Promote direct top level declarations to C globals, so that functions can
+ * read module state. The statements themselves still run in order inside
+ * main, which performs the initialization. */
+static void gen_globals(Buf *out, Vec *top) {
+    for (int i = 0; i < top->n; i++) {
+        Node *s = top->d[i];
+        if (s->k != N_LOCAL) continue;
+        {
+            char *cn = xmalloc(strlen(s->u.declar.name) + 32);
+            snprintf(cn, strlen(s->u.declar.name) + 32, "%s_%d", s->u.declar.name, cg_counter++);
+            s->u.declar.cname = cn;
+            s->u.declar.is_global = 1;
+            scope_declare(s->u.declar.name, cn, s->u.declar.typ);
+            if (s->u.declar.typ)
+                linef(out, "%s %s = 0;", s->u.declar.typ, cn);
+            else
+                linef(out, "cval %s = {T_NIL, {0}};", cn);
+        }
     }
 }
 
@@ -1931,10 +2331,22 @@ static char *render(Vec *funcs, Vec *top) {
     scope_top = -1;
     g_funcs = funcs;
 
+    scope_push();                 /* base scope holding top level globals */
+    gen_globals(&out, top);
+    buf_put(&out, "\n");
+
+    for (int i = 0; i < funcs->n; i++) {
+        if (funcs->d[i] && ((FuncDef *)funcs->d[i])->ext)
+            gen_extern(&out, funcs->d[i]);
+    }
+    buf_put(&out, "\n");
+
     for (int i = 0; i < funcs->n; i++) {
         FuncDef *f = funcs->d[i];
         Buf pl = {NULL, 0, 0};
-        char *mf = mangle(f->name);
+        char *mf;
+        if (f->ext) continue;
+        mf = mangle(f->name);
         scope_push();
         param_defs(&pl, f->params);
         linef(&out, "%s %s(%s);", f->rettype ? f->rettype : "cval", mf, pl.s ? pl.s : "");
@@ -1947,7 +2359,9 @@ static char *render(Vec *funcs, Vec *top) {
     for (int i = 0; i < funcs->n; i++) {
         FuncDef *f = funcs->d[i];
         Buf pl = {NULL, 0, 0};
-        char *mf = mangle(f->name);
+        char *mf;
+        if (f->ext) continue;
+        mf = mangle(f->name);
         scope_push();
         param_defs(&pl, f->params);
         linef(&out, "%s %s(%s) {", f->rettype ? f->rettype : "cval", mf, pl.s ? pl.s : "");
@@ -2017,7 +2431,7 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "--fast")) {
             do_fast = 1;
         } else if (!strcmp(argv[i], "--version") || !strcmp(argv[i], "-v")) {
-            printf("coolc %s - Cool Compilable Programming Language compiler\n", COOLC_VERSION);
+            printf("coolc %s: Cool Compilable Programming Language compiler\n", COOLC_VERSION);
             return 0;
         } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             usage();

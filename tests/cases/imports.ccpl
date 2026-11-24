@@ -1,0 +1,9 @@
+get "lib/mathlib/square"
+say("square:", square(4))
+
+get "lib/mathlib/cube"
+say("cube:", cube(3))
+
+get "lib/mathlib/area"
+say("area:", area(2))
+say("raw pi area:", PI * square(2))

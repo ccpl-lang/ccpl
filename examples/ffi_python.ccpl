@@ -1,0 +1,15 @@
+-- Calling Python functions. The runtime locates a Python DLL at startup.
+-- Set CCPL_PYTHON_DLL to a full path if automatic discovery does not work.
+
+extern "python" func sqrt(x: f64): f64 from "math"
+extern "python" func gcd(a: i32, b: i32): i32 from "math"
+extern "python" func asin(x: f64) from "math"
+extern "python" func getcwd(): cstr from "os"
+
+pyexec("import math")
+
+say("square root of two:", sqrt(2.0))
+say("greatest common divisor:", gcd(48, 18))
+say("dynamic return value:", asin(1.0))
+say("current directory:", getcwd())
+say("factorial of six:", pyeval("math.factorial(6)"))

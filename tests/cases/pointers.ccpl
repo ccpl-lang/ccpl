@@ -1,0 +1,24 @@
+var x: i32 = 42
+var p: i32* = &x
+*p = 99
+say("deref:", x)
+
+var a: u8* = malloc(8)
+var b: u8** = malloc(8)
+b[0] = a
+a[0] = 65
+say("chain:", b[0][0])
+free(a)
+free(b)
+
+var raw: ptr = malloc(4)
+free(raw)
+say("ptr type works")
+
+var text: cstr = "abc"
+say("first:", text[0], "second:", text[1])
+
+var r: i8* = malloc(4)
+r = realloc(r, 8)
+free(r)
+say("realloc works")

@@ -7,7 +7,7 @@ assignees: ""
 ---
 
 **Describe the bug**
-A clear and concise description of what went wrong.
+A clear description of what went wrong.
 
 **Minimal reproduction**
 A small `.ccpl` program that shows the problem:
@@ -27,10 +27,11 @@ coolc program.ccpl --run
 What you expected to happen.
 
 **Actual behavior**
-What actually happened. Include any compiler output or `--show-c` output if relevant.
+What happened. Include compiler output or `--show-c` output when relevant.
 
 **Environment**
 
-- CCPL version (`coolc --version`):
-- Windows version:
-- Toolchain source (bundled `ccpl-toolchain` / built from source):
+* CCPL version from `coolc --version`:
+* Windows version:
+* Toolchain source, bundled `ccpl-toolchain` or built from source:
+* For foreign calls, the library, module, or Python version:

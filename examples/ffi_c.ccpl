@@ -1,0 +1,12 @@
+-- Calling C functions from a DLL through the foreign function interface.
+-- Every declaration names the ABI, the C signature, and the library.
+
+extern "c" func puts(s: cstr): i32 from "msvcrt.dll"
+extern "c" func strlen(s: cstr): u64 from "msvcrt.dll"
+extern "c" func pow(x: f64, y: f64): f64 from "msvcrt.dll"
+extern "c" func GetTickCount(): u32 from "kernel32.dll"
+
+puts("hello from C")
+say("strlen of abcdef:", strlen("abcdef"))
+say("two to the tenth:", pow(2.0, 10.0))
+say("uptime is a positive number:", GetTickCount() > 0)

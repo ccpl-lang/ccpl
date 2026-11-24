@@ -1,0 +1,20 @@
+var keep = "a" .. "b"
+for i = 1, 1100 do
+    var scratch = "x" .. i
+end
+say("keep:", keep)
+
+var long = ""
+for i = 1, 500 do
+    long = long .. "z"
+end
+say("length:", len(long))
+
+func len(s)
+    var n: i32 = 0
+    var p: cstr = s
+    while p[n] ~= 0 do
+        n = n + 1
+    end
+    return n
+end

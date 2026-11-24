@@ -1,0 +1,1 @@
+extern "rust" func nope() from "nothing.dll"

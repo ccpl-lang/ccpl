@@ -1,0 +1,4 @@
+if true then
+    var y = 1
+end
+say(y)

@@ -1,0 +1,5 @@
+deref:	99
+chain:	65
+ptr type works
+first:	97	second:	98
+realloc works

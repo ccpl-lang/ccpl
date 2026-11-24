@@ -1,0 +1,7 @@
+extern "c" func strlen(s: cstr): u64 from "msvcrt.dll"
+extern "c" func pow(x: f64, y: f64): f64 from "msvcrt.dll"
+extern "c" func abs(n: i32): i32 from "msvcrt.dll"
+
+say("strlen:", strlen("abcdef"))
+say("pow:", pow(2.0, 10.0))
+say("abs:", abs(-7))

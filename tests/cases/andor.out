@@ -1,0 +1,6 @@
+side called
+and result:	false	calls:	1
+side called
+or result:	fallback	calls:	2
+side called
+second and:	false	calls:	3

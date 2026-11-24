@@ -1,5 +1,5 @@
 /*
- * clm - Cool Library Manager
+ * clm: Cool Library Manager
  *
  * A pip-like package manager for CCPL.
  *
@@ -25,6 +25,7 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
+#include "version.h"
 #ifndef __TINYC__
 #include <winsock2.h>
 #include <shellapi.h>
@@ -92,7 +93,7 @@ __declspec(dllimport) HINSTANCE __stdcall ShellExecuteA(void *hwnd, const char *
 #define CLM_CLIENT_ID "Iv23liYDAsixbxCt9ZCg"
 #endif
 
-#define CLM_VERSION "0.1.0"
+#define CLM_VERSION CCPL_VERSION
 #define REDIRECT_URI "http://127.0.0.1:11894/callback"
 #define CALLBACK_PORT 11894
 #define DEFAULT_REGISTRY "https://cdn.jsdelivr.net/gh/ccpl-lang/ccpl-packages@main"
@@ -210,15 +211,14 @@ static const char *registry_base(void) {
 /* command runner                                                      */
 /* ------------------------------------------------------------------ */
 
+/* Spawn a process directly, without cmd.exe, so package names can never be
+ * interpreted as shell syntax. */
 static int run(const char *cmd) {
     STARTUPINFOA si = {0}; si.cb = sizeof si;
     PROCESS_INFORMATION pi = {0};
+    char *lc = xstrdup(cmd);
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
-    /* rout through cmd.exe so builtins like rmdir work */
-    char cmdline[8192];
-    snprintf(cmdline, sizeof cmdline, "cmd.exe /c %s", cmd);
-    char *lc = xstrdup(cmdline);
     if (!CreateProcessA(NULL, lc, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
         free(lc);
         return -1;
@@ -232,24 +232,165 @@ static int run(const char *cmd) {
     return (int)ec;
 }
 
-static char *run_capture(const char *cmd) {
-    char *buf = NULL; size_t cap = 0, len = 0;
-    FILE *fp = _popen(cmd, "r");
-    if (!fp) return NULL;
-    char chunk[8192];
-    size_t rd;
-    while ((rd = fread(chunk, 1, sizeof chunk, fp)) > 0) {
-        if (len + rd + 1 > cap) {
-            cap = cap ? cap * 2 : 65536;
-            while (cap < len + rd + 1) cap *= 2;
-            char *ns = (char *)realloc(buf, cap);
-            if (!ns) { free(buf); _pclose(fp); return NULL; }
-            buf = ns;
-        }
-        memcpy(buf + len, chunk, rd);
-        len += rd;
+/* Delete a file or a directory tree. */
+static int remove_tree(const char *path) {
+    WIN32_FIND_DATAA fd;
+    char pat[MAX_PATH * 2];
+    HANDLE h;
+    snprintf(pat, sizeof pat, "%s\\*", path);
+    h = FindFirstFileA(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            char child[MAX_PATH * 2];
+            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+            snprintf(child, sizeof child, "%s\\%s", path, fd.cFileName);
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                remove_tree(child);
+            } else {
+                SetFileAttributesA(child, FILE_ATTRIBUTE_NORMAL);
+                DeleteFileA(child);
+            }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
     }
-    _pclose(fp);
+    SetFileAttributesA(path, FILE_ATTRIBUTE_NORMAL);
+    if (RemoveDirectoryA(path)) return 1;
+    return DeleteFileA(path);
+}
+
+/* Recursively copy a directory tree. */
+static int copy_tree(const char *src, const char *dst) {
+    WIN32_FIND_DATAA fd;
+    char pat[MAX_PATH * 2];
+    HANDLE h;
+    mkdirs(dst);
+    snprintf(pat, sizeof pat, "%s\\*", src);
+    h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        char from[MAX_PATH * 2], to[MAX_PATH * 2];
+        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+        snprintf(from, sizeof from, "%s\\%s", src, fd.cFileName);
+        snprintf(to, sizeof to, "%s\\%s", dst, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (!copy_tree(from, to)) { FindClose(h); return 0; }
+        } else if (!CopyFileA(from, to, FALSE)) {
+            FindClose(h);
+            return 0;
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return 1;
+}
+
+/* Cryptographically strong bytes when the system offers them, rand() as a
+ * last resort. Used for the OAuth state and PKCE verifier. */
+static void random_bytes(unsigned char *buf, size_t n) {
+    static int (*fn)(void *, unsigned long) = 0;
+    static int tried = 0;
+    if (!tried) {
+        HMODULE m = LoadLibraryA("advapi32.dll");
+        if (m) fn = (int (*)(void *, unsigned long))GetProcAddress(m, "SystemFunction036");
+        tried = 1;
+    }
+    if (fn && fn(buf, (unsigned long)n)) return;
+    for (size_t i = 0; i < n; i++) buf[i] = (unsigned char)(rand() & 0xFF);
+}
+
+static int valid_url(const char *u) {
+    if (!u || !*u) return 0;
+    if (strncmp(u, "https://", 8) && strncmp(u, "http://", 7)) return 0;
+    if (strchr(u, '"')) return 0;
+    return 1;
+}
+static int valid_name(const char *name) {
+    size_t n;
+    if (!name) return 0;
+    n = strlen(name);
+    if (n == 0 || n > 64) return 0;
+    if (name[0] == '.') return 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '.' || c == '_' || c == '-') continue;
+        return 0;
+    }
+    if (strstr(name, "..")) return 0;
+    return 1;
+}
+
+/* Versions allow the same characters plus build metadata, for example 1.0.0+build.5. */
+static int valid_version(const char *version) {
+    size_t n;
+    if (!version) return 0;
+    n = strlen(version);
+    if (n == 0 || n > 64) return 0;
+    if (version[0] == '.') return 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = version[i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '.' || c == '_' || c == '-' || c == '+') continue;
+        return 0;
+    }
+    if (strstr(version, "..")) return 0;
+    return 1;
+}
+
+
+/* Run a command and capture stdout plus stderr. Pipes are used directly so
+ * nothing passes through cmd.exe. */
+static char *run_capture(const char *cmd) {
+    SECURITY_ATTRIBUTES sa;
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    HANDLE rd = NULL, wr = NULL;
+    char *buf = NULL;
+    size_t cap = 0, len = 0;
+    char *lc;
+    DWORD got;
+
+    sa.nLength = sizeof sa;
+    sa.lpSecurityDescriptor = NULL;
+    sa.bInheritHandle = TRUE;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) return NULL;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.hStdOutput = wr;
+    si.hStdError = wr;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.wShowWindow = SW_HIDE;
+    memset(&pi, 0, sizeof pi);
+    lc = xstrdup(cmd);
+    if (!CreateProcessA(NULL, lc, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+        free(lc);
+        CloseHandle(rd);
+        CloseHandle(wr);
+        return NULL;
+    }
+    free(lc);
+    CloseHandle(wr);
+    {
+        char chunk[8192];
+        while (ReadFile(rd, chunk, sizeof chunk, &got, NULL) && got > 0) {
+            if (len + got + 1 > cap) {
+                size_t ncap = cap ? cap * 2 : 65536;
+                char *ns;
+                while (ncap < len + got + 1) ncap *= 2;
+                ns = (char *)realloc(buf, ncap);
+                if (!ns) { free(buf); CloseHandle(rd); CloseHandle(pi.hProcess); CloseHandle(pi.hThread); return NULL; }
+                buf = ns;
+                cap = ncap;
+            }
+            memcpy(buf + len, chunk, got);
+            len += got;
+        }
+    }
+    CloseHandle(rd);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
     if (!buf) return xstrdup("");
     buf[len] = 0;
     return (char *)realloc(buf, len + 1);
@@ -380,17 +521,24 @@ static int parse_index(const char *j) {
     const char *p = j;
     while (*p) {
         const char *o = strchr(p, '{');
+        const char *e;
+        int depth;
         if (!o) break;
-        const char *e = strchr(o + 1, '}');
-        if (!e) break;
+        depth = 0;
+        e = o;
+        for (; *e; e++) {
+            if (*e == '{') depth++;
+            else if (*e == '}') { depth--; if (depth == 0) { e++; break; } }
+        }
+        if (depth != 0) break;
         if (strstr(o, "\"name\"")) {
-            size_t bl = (size_t)(e - o + 1);
+            size_t bl = (size_t)(e - o);
             char *block = (char *)malloc(bl + 1);
             memcpy(block, o, bl); block[bl] = 0;
             parse_pkg_block(block);
             free(block);
         }
-        p = e + 1;
+        p = e;
     }
     return g_npkg > 0;
 }
@@ -488,9 +636,12 @@ static void base64url(const unsigned char *in, size_t n, Buf *out) {
 }
 
 static void pkce_pair(char *verifier, size_t vsz, char *challenge, size_t csz) {
-    srand((unsigned)(time(NULL) ^ GetCurrentProcessId()));
     static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    for (size_t i = 0; i + 1 < vsz; i++) verifier[i] = alphabet[rand() % (sizeof alphabet - 1)];
+    unsigned char rnd[128];
+    size_t need = vsz > 1 ? vsz - 1 : 0;
+    if (need > sizeof rnd) need = sizeof rnd;
+    random_bytes(rnd, need);
+    for (size_t i = 0; i + 1 < vsz; i++) verifier[i] = alphabet[rnd[i] % (sizeof alphabet - 1)];
     verifier[vsz - 1] = 0;
     Sha256 s; sha_init(&s);
     sha_update(&s, verifier, strlen(verifier));
@@ -508,17 +659,33 @@ static void pkce_pair(char *verifier, size_t vsz, char *challenge, size_t csz) {
 
 static const char *auth_file(void) { return config_file("auth.json"); }
 
+static char *oauth_post(const char *body);
+
 static int auth_save(const char *client_id, const char *access_token, const char *refresh_token,
                      const char *login, long long expires_in, long long refresh_expires_in) {
-    mkdirs(config_file("."));
-    char b[4096];
+    Buf b = {0};
     long long now = (long long)time(NULL);
-    snprintf(b, sizeof b,
-        "{\n \"client_id\": \"%s\",\n \"access_token\": \"%s\",\n \"refresh_token\": \"%s\",\n"
-        " \"login\": \"%s\",\n \"expires_at\": %lld,\n \"refresh_expires_at\": %lld\n}\n",
-        client_id, access_token, refresh_token ? refresh_token : "", login,
-        expires_in ? now + expires_in : 0, refresh_expires_in ? now + refresh_expires_in : 0);
-    return write_all(auth_file(), b, strlen(b));
+    mkdirs(config_file("."));
+    buf_put(&b, "{\n \"client_id\": \"");
+    buf_put(&b, client_id ? client_id : "");
+    buf_put(&b, "\",\n \"access_token\": \"");
+    buf_put(&b, access_token ? access_token : "");
+    buf_put(&b, "\",\n \"refresh_token\": \"");
+    buf_put(&b, refresh_token ? refresh_token : "");
+    buf_put(&b, "\",\n \"login\": \"");
+    buf_put(&b, login ? login : "");
+    {
+        char tail[128];
+        snprintf(tail, sizeof tail, "\",\n \"expires_at\": %lld,\n \"refresh_expires_at\": %lld\n}\n",
+                 expires_in ? now + expires_in : 0,
+                 refresh_expires_in ? now + refresh_expires_in : 0);
+        buf_put(&b, tail);
+    }
+    {
+        int ok = write_all(auth_file(), b.s ? b.s : "{}", b.s ? b.len : 2);
+        free(b.s);
+        return ok;
+    }
 }
 
 static char *auth_get(const char *key) {
@@ -532,6 +699,50 @@ static char *auth_get(const char *key) {
 static void auth_clear(void) {
     FILE *f = fopen(auth_file(), "wb");
     if (f) { fputs("{}", f); fclose(f); }
+}
+
+/* Return a usable access token, refreshing it when the stored one has
+ * expired. Returns NULL when the user is not logged in. */
+static char *auth_token(void) {
+    char *at = auth_get("access_token");
+    char *ex = auth_get("expires_at");
+    long long exp = ex ? atoll(ex) : 0;
+    free(ex);
+    if (at && (!exp || (long long)time(NULL) < exp - 60)) return at;
+    free(at);
+
+    {
+        char *rt = auth_get("refresh_token");
+        char *cid = auth_get("client_id");
+        char *nat = NULL;
+        if (!rt || !*rt) { free(rt); free(cid); return NULL; }
+        Buf body = {0};
+        buf_put(&body, "grant_type=refresh_token&client_id=");
+        buf_put(&body, cid ? cid : CLM_CLIENT_ID);
+        buf_put(&body, "&refresh_token=");
+        buf_put(&body, rt);
+        {
+            char *json = oauth_post(body.s);
+            if (json) {
+                nat = json_str(json, "access_token");
+                if (nat) {
+                    char *nrt = json_str(json, "refresh_token");
+                    char *e1 = json_str(json, "expires_in");
+                    char *e2 = json_str(json, "refresh_token_expires_in");
+                    char *login = auth_get("login");
+                    auth_save(cid ? cid : CLM_CLIENT_ID, nat,
+                              nrt ? nrt : rt, login ? login : "",
+                              e1 ? atoll(e1) : 0, e2 ? atoll(e2) : 0);
+                    free(nrt); free(e1); free(e2); free(login);
+                }
+                free(json);
+            }
+        }
+        free(body.s);
+        free(rt);
+        free(cid);
+        return nat;
+    }
 }
 
 /* POST an urlencoded form. Each `name=value` pair keeps the `name=` and the
@@ -679,13 +890,15 @@ static int http_server_login(LoginCtx *ctx, int timeout_sec) {
                 const char *s = strstr(q, "state=");
                 if (s) { s += 6; int i = 0; while (*s && *s != '&' && i < 127) state[i++] = *s++; state[i] = 0; }
             }
-            if (ctx->expect_state && *ctx->expect_state && state[0] && strcmp(state, ctx->expect_state)) {
+            if (ctx->expect_state && *ctx->expect_state &&
+                (!state[0] || strcmp(state, ctx->expect_state))) {
                 ctx->code = 99;
                 snprintf(ctx->err, sizeof ctx->err, "state mismatch");
             } else if (!code[0]) {
                 ctx->code = 99;
                 snprintf(ctx->err, sizeof ctx->err, "no code in callback");
-            } else {
+            }
+            if (ctx->code == 0) {
                 Buf body = {0};
                 buf_put(&body, "client_id="); buf_put(&body, ctx->client_id);
                 if (ctx->client_secret && *ctx->client_secret) { buf_put(&body, "&client_secret="); buf_put(&body, ctx->client_secret); }
@@ -736,7 +949,7 @@ static int http_server_login(LoginCtx *ctx, int timeout_sec) {
             handled = 1;
         }
         if (!handled) {
-            const char *page = "<!doctype html><html><body><p style='font-family:sans-serif'>clm - waiting for authorization...</p></body></html>";
+            const char *page = "<!doctype html><html><body><p style='font-family:sans-serif'>clm: waiting for authorization...</p></body></html>";
             char resp[4096];
             snprintf(resp, sizeof resp,
                 "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s",
@@ -760,7 +973,7 @@ static void open_browser(const char *url) {
 
 static void help(void) {
     printf(
-        "clm %s - Cool Library Manager for CCPL\n\n"
+        "clm %s: Cool Library Manager for CCPL\n\n"
         "usage:\n"
         "  clm login                     link this machine to a GitHub account (device flow)\n"
         "  clm logout                    forget the linked account\n"
@@ -770,7 +983,8 @@ static void help(void) {
         "  clm update [<name>]           update installed package(s)\n"
         "  clm remove <name>             uninstall a package\n"
         "  clm list                      list installed packages\n"
-        "  clm publish <dir>             build a library for publishing\n"
+        "  clm publish <dir>             build a package archive for submission\n"
+        "  clm publish <dir> --submit <url>  upload it to a registry endpoint\n"
         "  clm -h | --help               this help\n"
         "  clm --version                 version\n\n"
         "registry: %s\n",
@@ -840,7 +1054,7 @@ static int login_device_flow(void) {
             auth_save(cid, at, rt, login, e1, e2);
             printf("Linked! Your account %s is now connected to clm.\n", login);
             printf("You can now `clm publish <dir>` or leave it be.\n");
-            free(login); free(at); free(rt); free(dev); free(uc); free(ei); free(iv);
+            free(login); free(at); free(rt); free(err); free(dev); free(uc); free(ei); free(iv);
             return 0;
         }
         if (err) {
@@ -870,9 +1084,12 @@ static int login_web_flow(void) {
     pkce_pair(verifier, sizeof verifier, challenge, sizeof challenge);
 
     char state[33];
-    srand((unsigned)(time(NULL) ^ GetCurrentProcessId()));
-    for (int i = 0; i < 32; i++) state[i] = (char)("abcdef0123456789"[rand() % 16]);
-    state[32] = 0;
+    {
+        unsigned char rnd[32];
+        random_bytes(rnd, sizeof rnd);
+        for (int i = 0; i < 32; i++) state[i] = (char)("abcdef0123456789"[rnd[i] & 15]);
+        state[32] = 0;
+    }
 
     const char *cid = getenv("CLM_CLIENT_ID");
     if (!cid || !*cid) cid = CLM_CLIENT_ID;
@@ -926,46 +1143,25 @@ static int cmd_login(void) {
 }
 
 static int cmd_whoami(void) {
-    char *at = auth_get("access_token");
-    char *rt = auth_get("refresh_token");
-    if (!at && rt) {
-        char *cid = auth_get("client_id");
-        char *nat = NULL, *nrt = NULL; long long e1 = 0, e2 = 0;
-        Buf body = {0};
-        buf_put(&body, "grant_type=refresh_token&client_id=");
-        buf_put(&body, cid ? cid : CLM_CLIENT_ID);
-        buf_put(&body, "&refresh_token="); buf_put(&body, rt);
-        char *json = oauth_post(body.s);
-        free(body.s);
-        if (json) {
-            nat = json_str(json, "access_token");
-            nrt = json_str(json, "refresh_token");
-            char *ei = json_str(json, "expires_in"); if (ei) { e1 = atoll(ei); free(ei); }
-            char *rei = json_str(json, "refresh_token_expires_in"); if (rei) { e2 = atoll(rei); free(rei); }
-            free(json);
-        }
-        if (nat) {
-            char *login = auth_get("login");
-            auth_save(cid ? cid : CLM_CLIENT_ID, nat, nrt ? nrt : "", login ? login : "", e1, e2);
-            free(login);
-            free(at); free(rt);
-            at = nat; rt = nrt;
-        } else free(nat);
-        free(cid);
-    }
+    char *at = auth_token();
+    char *login;
     if (!at) { printf("not logged in. run `clm login`.\n"); return 0; }
-    char *login = auth_get("login");
-    if (login && *login) { printf("%s\n", login); }
-    else {
+    login = auth_get("login");
+    if (login && *login) {
+        printf("%s\n", login);
+    } else {
         char *me = api_call(at, "https://api.github.com/user");
         if (me) {
             login = json_str(me, "login");
             if (login) printf("%s\n", login);
             else fprintf(stderr, "could not resolve the linked account.\n");
             free(me);
-        } else fprintf(stderr, "could not reach GitHub.\n");
+        } else {
+            fprintf(stderr, "could not reach GitHub.\n");
+        }
     }
-    free(at); free(rt); free(login);
+    free(at);
+    free(login);
     return 0;
 }
 
@@ -1020,26 +1216,58 @@ static int cmd_search(int argc, char **argv) {
     return 0;
 }
 
+/* Parse up to three numeric components. Missing parts count as zero, and any
+ * text after a component (like a prerelease tag) is ignored for ordering. */
+static void ver_parts(const char *v, long long out[3]) {
+    int part = 0;
+    out[0] = out[1] = out[2] = 0;
+    while (*v && part < 3) {
+        long long n = 0;
+        int any = 0;
+        while (*v >= '0' && *v <= '9') { n = n * 10 + (*v - '0'); v++; any = 1; }
+        out[part++] = any ? n : 0;
+        while (*v && *v != '.') v++;
+        if (*v == '.') v++;
+    }
+}
+
+static int ver_cmp(const char *a, const char *b) {
+    long long pa[3], pb[3];
+    ver_parts(a, pa);
+    ver_parts(b, pb);
+    for (int i = 0; i < 3; i++) {
+        if (pa[i] < pb[i]) return -1;
+        if (pa[i] > pb[i]) return 1;
+    }
+    return 0;
+}
+
 static int ver_satisfies(const char *v, const char *spec) {
     if (!spec || !*spec) return 1;
     if (spec[0] == '^') {
-        double vd = atof(v), pd = atof(spec + 1);
-        /* same major */
-        if ((long long)vd != (long long)pd) return 0;
-        return vd >= pd;
+        long long vp[3], sp[3];
+        ver_parts(v, vp);
+        ver_parts(spec + 1, sp);
+        /* Same major, and not older than the requested version. */
+        if (vp[0] != sp[0]) return 0;
+        return ver_cmp(v, spec + 1) >= 0;
+    }
+    if (spec[0] == '~') {
+        long long vp[3], sp[3];
+        ver_parts(v, vp);
+        ver_parts(spec + 1, sp);
+        if (spec[1] == '~') return ver_cmp(v, spec + 2) >= 0 && vp[0] == sp[0];
+        return ver_cmp(v, spec + 1) >= 0 && vp[1] == sp[1];
     }
     if (spec[0] == '>') {
-        double vd = atof(v);
-        if (spec[1] == '=') return vd >= atof(spec + 2);
-        return vd > atof(spec + 1);
+        if (spec[1] == '=') return ver_cmp(v, spec + 2) >= 0;
+        return ver_cmp(v, spec + 1) > 0;
     }
     if (spec[0] == '<') {
-        double vd = atof(v);
-        if (spec[1] == '=') return vd <= atof(spec + 2);
-        return vd < atof(spec + 1);
+        if (spec[1] == '=') return ver_cmp(v, spec + 2) <= 0;
+        return ver_cmp(v, spec + 1) < 0;
     }
-    if (spec[0] == '~') return atof(v) >= atof(spec + 1) && atof(v) < atof(spec + 1) + 1;
-    return !strcmp(v, spec);
+    return ver_cmp(v, spec) == 0;
 }
 
 static const char *resolve_version(Pkg *o, const char *spec) {
@@ -1048,7 +1276,7 @@ static const char *resolve_version(Pkg *o, const char *spec) {
     for (int i = 0; i < o->nver; i++) {
         const char *v = o->versions[i];
         if (v && ver_satisfies(v, spec)) {
-            if (!best || atof(v) > atof(best)) best = v;
+            if (!best || ver_cmp(v, best) > 0) best = v;
         }
     }
     return best;
@@ -1140,36 +1368,74 @@ static int installed_set(const char *name, const char *ver, int remove) {
 
 static int install_pkg(const char *name, const char *spec, int depth);
 
+/* Reject archive entries that would escape the extraction directory. */
+static int zip_entries_safe(const char *zip) {
+    Buf cmd = {0};
+    char *list;
+    int ok = 1;
+    buf_put(&cmd, "tar.exe -tf \"");
+    buf_put(&cmd, zip);
+    buf_put(&cmd, "\"");
+    list = run_capture(cmd.s);
+    free(cmd.s);
+    if (!list) return 0;
+    for (char *line = list; *line; ) {
+        char *end = strchr(line, '\n');
+        if (end) *end = 0;
+        if (strstr(line, "..") || line[0] == '/' || line[0] == '\\' ||
+            (line[0] && line[1] == ':')) {
+            ok = 0;
+            break;
+        }
+        if (!end) break;
+        line = end + 1;
+    }
+    free(list);
+    return ok;
+}
+
 static int install_one(const char *name, const char *version, int depth) {
-    char zipurl[MAX_PATH * 2];
-    snprintf(zipurl, sizeof zipurl, "%s/packages/%s/%s-%s.zip", registry_base(), name, name, version);
+    char zipurl[1024];
     char tmpdir[MAX_PATH];
+    char zip[MAX_PATH], ex[MAX_PATH];
+    char pkgpath[MAX_PATH];
+    char src[MAX_PATH];
+    char cmd[MAX_PATH * 4];
+    int dep_failed = 0;
+
+    if (!valid_name(name) || !valid_version(version)) {
+        fprintf(stderr, "invalid package name or version: %s %s\n", name, version);
+        return 1;
+    }
+
+    snprintf(zipurl, sizeof zipurl, "%s/packages/%s/%s-%s.zip", registry_base(), name, name, version);
     snprintf(tmpdir, sizeof tmpdir, "%s\\.clm\\tmp", home_dir());
     mkdirs(tmpdir);
-    char zip[MAX_PATH], ex[MAX_PATH];
     snprintf(zip, sizeof zip, "%s\\pkg.zip", tmpdir);
     snprintf(ex, sizeof ex, "%s\\x", tmpdir);
-
-    char pkgpath[MAX_PATH];
     snprintf(pkgpath, sizeof pkgpath, "%s\\packages\\%s", exe_dir(), name);
-    if (path_exists(pkgpath)) {
-        char cmd[MAX_PATH * 2];
-        snprintf(cmd, sizeof cmd, "rmdir /s /q \"%s\"", pkgpath);
-        run(cmd);
-    }
 
     printf("fetching %s %s ...\n", name, version);
     if (fetch_url_to(zipurl, zip) != 0) {
         fprintf(stderr, "failed to download %s\n", zipurl);
         return 1;
     }
-    if (path_exists(ex)) { char cmd[MAX_PATH * 2]; snprintf(cmd, sizeof cmd, "rmdir /s /q \"%s\"", ex); run(cmd); }
+    if (!zip_entries_safe(zip)) {
+        fprintf(stderr, "package %s contains unsafe paths\n", name);
+        remove_tree(zip);
+        return 1;
+    }
+    if (path_exists(ex)) remove_tree(ex);
     mkdirs(ex);
-    char cmd[MAX_PATH * 4];
     snprintf(cmd, sizeof cmd, "tar.exe -xf \"%s\" -C \"%s\"", zip, ex);
-    if (run(cmd) != 0) { fprintf(stderr, "failed to unpack %s\n", zip); return 1; }
+    if (run(cmd) != 0) {
+        fprintf(stderr, "failed to unpack %s\n", zip);
+        remove_tree(zip);
+        remove_tree(ex);
+        return 1;
+    }
+    remove_tree(zip);
 
-    char src[MAX_PATH];
     snprintf(src, sizeof src, "%s\\%s", ex, name);
     if (!is_dir_p(src)) {
         WIN32_FIND_DATAA fd;
@@ -1187,51 +1453,73 @@ static int install_one(const char *name, const char *version, int depth) {
             } while (FindNextFileA(h, &fd));
             FindClose(h);
         }
-        if (!found) { fprintf(stderr, "package %s has no contents.\n", name); return 1; }
+        if (!found) {
+            fprintf(stderr, "package %s has no contents.\n", name);
+            remove_tree(ex);
+            return 1;
+        }
     }
     mkdirs(installed_dir());
-    if (MoveFileA(src, pkgpath) == 0) {
-        snprintf(cmd, sizeof cmd, "xcopy \"%s\" \"%s\" /e /i /q /h /y", src, pkgpath);
-        run(cmd);
+    if (path_exists(pkgpath)) remove_tree(pkgpath);
+    if (!MoveFileA(src, pkgpath) && !copy_tree(src, pkgpath)) {
+        fprintf(stderr, "could not install %s into %s\n", name, pkgpath);
+        remove_tree(ex);
+        return 1;
+    }
+    remove_tree(ex);
+    if (!path_exists(pkgpath)) {
+        fprintf(stderr, "install of %s did not create %s\n", name, pkgpath);
+        return 1;
     }
     installed_set(name, version, 0);
 
     /* dependencies from clm.json */
-    char manifest[MAX_PATH];
-    snprintf(manifest, sizeof manifest, "%s\\clm.json", pkgpath);
-    char *mj = read_all(manifest, NULL);
-    if (mj) {
-        char *deps = json_obj_str(mj, "deps");
-        if (deps) {
-            const char *p = deps;
-            while ((p = strstr(p, "\"")) != NULL) {
-                const char *ke = strchr(p + 1, '"');
-                if (!ke) break;
-                const char *q2 = skip_ws(ke + 1);
-                if (*q2 != ':') { p = ke + 1; continue; }
-                q2 = skip_ws(q2 + 1);
-                if (*q2 != '"') { p = ke + 1; continue; }
-                const char *ve = strchr(q2 + 1, '"');
-                if (!ve) break;
-                size_t kl = (size_t)(ke - p - 1), vl = (size_t)(ve - q2 - 1);
-                char *dn = (char *)malloc(kl + 1);
-                memcpy(dn, p + 1, kl); dn[kl] = 0;
-                char *dv = (char *)malloc(vl + 1);
-                memcpy(dv, q2 + 1, vl); dv[vl] = 0;
-                if (kl && vl) install_pkg(dn, dv, depth + 1);
-                free(dn); free(dv);
-                p = ve + 1;
+    {
+        char manifest[MAX_PATH];
+        char *mj;
+        snprintf(manifest, sizeof manifest, "%s\\clm.json", pkgpath);
+        mj = read_all(manifest, NULL);
+        if (mj) {
+            char *deps = json_obj_str(mj, "deps");
+            if (deps) {
+                const char *p = deps;
+                while ((p = strstr(p, "\"")) != NULL) {
+                    const char *ke = strchr(p + 1, '"');
+                    if (!ke) break;
+                    const char *q2 = skip_ws(ke + 1);
+                    if (*q2 != ':') { p = ke + 1; continue; }
+                    q2 = skip_ws(q2 + 1);
+                    if (*q2 != '"') { p = ke + 1; continue; }
+                    const char *ve = strchr(q2 + 1, '"');
+                    if (!ve) break;
+                    {
+                        size_t kl = (size_t)(ke - p - 1), vl = (size_t)(ve - q2 - 1);
+                        char *dn = (char *)malloc(kl + 1);
+                        char *dv = (char *)malloc(vl + 1);
+                        memcpy(dn, p + 1, kl); dn[kl] = 0;
+                        memcpy(dv, q2 + 1, vl); dv[vl] = 0;
+                        if (kl && vl && install_pkg(dn, dv, depth + 1) != 0) dep_failed = 1;
+                        free(dn);
+                        free(dv);
+                    }
+                    p = ve + 1;
+                }
+                free(deps);
             }
-            free(deps);
+            free(mj);
         }
-        free(mj);
     }
 
+    if (dep_failed) {
+        fprintf(stderr, "installed %s %s, but some dependencies failed\n", name, version);
+        return 1;
+    }
     printf("installed %s %s\n", name, version);
     return 0;
 }
 
 static int install_pkg(const char *name, const char *spec, int depth) {
+    if (!valid_name(name)) { fprintf(stderr, "invalid package name: %s\n", name); return 1; }
     if (depth > 8) { fprintf(stderr, "dependency depth exceeded at %s\n", name); return 1; }
     char *idx = registry_index();
     if (!idx || !*idx) { fprintf(stderr, "could not fetch the registry (%s).\n", registry_base()); free(idx); return 1; }
@@ -1282,13 +1570,14 @@ static int cmd_list(void) {
 
 static int cmd_remove(int argc, char **argv) {
     if (argc < 1 || !*argv[0]) { fprintf(stderr, "usage: clm remove <name>\n"); return 1; }
-    char pkgpath[MAX_PATH];
-    snprintf(pkgpath, sizeof pkgpath, "%s\\packages\\%s", exe_dir(), argv[0]);
-    if (!path_exists(pkgpath)) { fprintf(stderr, "package %s is not installed.\n", argv[0]); return 1; }
-    char c[MAX_PATH * 2];
-    snprintf(c, sizeof c, "rmdir /s /q \"%s\"", pkgpath);
-    if (run(c) != 0) { fprintf(stderr, "could not remove %s\n", argv[0]); return 1; }
-    installed_set(argv[0], NULL, 1);
+    if (!valid_name(argv[0])) { fprintf(stderr, "invalid package name: %s\n", argv[0]); return 1; }
+    {
+        char pkgpath[MAX_PATH];
+        snprintf(pkgpath, sizeof pkgpath, "%s\\packages\\%s", exe_dir(), argv[0]);
+        if (!path_exists(pkgpath)) { fprintf(stderr, "package %s is not installed.\n", argv[0]); return 1; }
+        if (!remove_tree(pkgpath)) { fprintf(stderr, "could not remove %s\n", argv[0]); return 1; }
+        installed_set(argv[0], NULL, 1);
+    }
     printf("removed %s\n", argv[0]);
     return 0;
 }
@@ -1297,59 +1586,100 @@ static int cmd_update(int argc, char **argv) {
     if (argc >= 1 && *argv[0]) {
         InstPair *pairs = NULL;
         int n = inst_pairs(&pairs);
+        int rc = 1;
+        int found = 0;
         for (int i = 0; i < n; i++) {
-            if (!strcmp(pairs[i].key, argv[0])) { printf("checking %s ...\n", argv[0]); install_pkg(argv[0], NULL, 0); inst_pairs_free(pairs, n); return 0; }
+            if (!strcmp(pairs[i].key, argv[0])) {
+                printf("checking %s ...\n", argv[0]);
+                rc = install_pkg(argv[0], NULL, 0);
+                found = 1;
+                break;
+            }
         }
         inst_pairs_free(pairs, n);
-        fprintf(stderr, "package %s is not installed.\n", argv[0]);
-        return 1;
+        if (!found) fprintf(stderr, "package %s is not installed.\n", argv[0]);
+        return rc;
     }
-    InstPair *pairs = NULL;
-    int n = inst_pairs(&pairs);
-    if (!n) { printf("no packages installed.\n"); return 0; }
-    for (int i = 0; i < n; i++) {
-        printf("checking %s ...\n", pairs[i].key);
-        install_pkg(pairs[i].key, NULL, 0);
+    {
+        InstPair *pairs = NULL;
+        int n = inst_pairs(&pairs);
+        int rc = 0;
+        if (!n) { printf("no packages installed.\n"); return 0; }
+        for (int i = 0; i < n; i++) {
+            printf("checking %s ...\n", pairs[i].key);
+            if (install_pkg(pairs[i].key, NULL, 0) != 0) rc = 1;
+        }
+        inst_pairs_free(pairs, n);
+        return rc;
     }
-    inst_pairs_free(pairs, n);
-    return 0;
 }
 
 static int cmd_publish(int argc, char **argv) {
-    if (argc < 1 || !*argv[0]) { fprintf(stderr, "usage: clm publish <dir>\n"); return 1; }
-    const char *dir = argv[0];
+    const char *dir;
+    const char *submit = NULL;
     char manifest[MAX_PATH];
+    char *mj;
+    char *name;
+    char *ver;
+    char tmpdir[MAX_PATH];
+    char stage[MAX_PATH];
+    char out[MAX_PATH];
+    char cmd[MAX_PATH * 4];
+    int ok;
+
+    if (argc < 1 || !*argv[0]) { fprintf(stderr, "usage: clm publish <dir> [--submit <url>]\n"); return 1; }
+    dir = argv[0];
+    if (argc >= 2 && !strcmp(argv[1], "--submit")) {
+        if (argc < 3) { fprintf(stderr, "usage: clm publish <dir> --submit <url>\n"); return 1; }
+        submit = argv[2];
+    }
+    if (submit && !valid_url(submit)) { fprintf(stderr, "invalid submission URL\n"); return 1; }
+
     snprintf(manifest, sizeof manifest, "%s\\clm.json", dir);
-    char *mj = read_all(manifest, NULL);
+    mj = read_all(manifest, NULL);
     if (!mj) { fprintf(stderr, "no clm.json found in %s\n", dir); return 1; }
-    char *name = json_str(mj, "name");
-    char *ver = json_str(mj, "version");
-    if (!name || !ver || !*name || !*ver) {
-        fprintf(stderr, "clm.json must have \"name\" and \"version\".\n");
+    name = json_str(mj, "name");
+    ver = json_str(mj, "version");
+    if (!name || !ver || !*name || !*ver || !valid_name(name) || !valid_version(ver)) {
+        fprintf(stderr, "clm.json needs a valid \"name\" and \"version\".\n");
         free(mj); free(name); free(ver);
         return 1;
     }
-    printf("building %s-%s ...\n", name, ver);
-    char tmpdir[MAX_PATH];
+    printf("packaging %s %s ...\n", name, ver);
     snprintf(tmpdir, sizeof tmpdir, "%s\\.clm\\pub", home_dir());
-    if (path_exists(tmpdir)) { char c[MAX_PATH]; snprintf(c, sizeof c, "rmdir /s /q \"%s\"", tmpdir); run(c); }
+    if (path_exists(tmpdir)) remove_tree(tmpdir);
     mkdirs(tmpdir);
-    char stage[MAX_PATH];
     snprintf(stage, sizeof stage, "%s\\%s", tmpdir, name);
-    char cmd[MAX_PATH * 2];
-    snprintf(cmd, sizeof cmd, "xcopy \"%s\" \"%s\" /e /i /q /h /y", dir, stage);
-    if (run(cmd) != 0) { fprintf(stderr, "could not stage %s\n", dir); free(mj); free(name); free(ver); return 1; }
-    char out[MAX_PATH];
+    if (!copy_tree(dir, stage)) {
+        fprintf(stderr, "could not stage %s\n", dir);
+        remove_tree(tmpdir);
+        free(mj); free(name); free(ver);
+        return 1;
+    }
     snprintf(out, sizeof out, "%s-%s.zip", name, ver);
     snprintf(cmd, sizeof cmd, "tar.exe -a -c -f \"%s\" -C \"%s\" \"%s\"", out, tmpdir, name);
-    int ok = run(cmd) == 0;
-    if (ok) {
-        printf("built %s\n", out);
-        printf("submit it to the registry: open a PR on\n");
-        printf("  https://github.com/ccpl-lang/ccpl-packages\n");
-        printf("with packages/%s/%s and an updated index.json.\n", name, out);
-    } else {
+    ok = run(cmd) == 0;
+    remove_tree(tmpdir);
+    if (!ok) {
         fprintf(stderr, "zip creation failed.\n");
+    } else if (submit) {
+        char *token = auth_token();
+        if (!token) {
+            fprintf(stderr, "log in with `clm login` before submitting.\n");
+            free(mj); free(name); free(ver);
+            return 1;
+        }
+        snprintf(cmd, sizeof cmd,
+                 "curl.exe -sS -f -X POST -H \"Authorization: Bearer %s\" -H \"Accept: application/json\" -F \"file=@%s\" \"%s\"",
+                 token, out, submit);
+        ok = run(cmd) == 0;
+        free(token);
+        if (ok) printf("submitted %s to %s\n", out, submit);
+        else fprintf(stderr, "submission failed; the package is still at %s\n", out);
+    } else {
+        printf("built %s\n", out);
+        printf("submit it with `clm publish %s --submit <registry url>`\n", dir);
+        printf("or open a pull request against https://github.com/ccpl-lang/ccpl-packages\n");
     }
     free(mj); free(name); free(ver);
     return ok ? 0 : 1;
